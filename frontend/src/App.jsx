@@ -83,6 +83,63 @@ function MiniKpi({ label, value, detail, tone = "neutral" }) {
   );
 }
 
+/* --- Confidence Factor Bar Component --- */
+function ConfidenceBar({ name, score, weight }) {
+  const barWidth = Math.max(2, Math.round(score * 100));
+  const tone = score >= 0.6 ? "high" : score >= 0.3 ? "mid" : "low";
+  return (
+    <div className="conf-factor">
+      <div className="conf-factor-header">
+        <span className="conf-factor-name">{name}</span>
+        <span className="conf-factor-meta">{(score * 100).toFixed(0)}% &times; {(weight * 100).toFixed(0)}%</span>
+      </div>
+      <div className="conf-bar-track">
+        <div className={`conf-bar-fill conf-${tone}`} style={{ width: `${barWidth}%` }} />
+      </div>
+    </div>
+  );
+}
+
+/* --- Explanation Section --- */
+function SignalExplanation({ explanation }) {
+  if (!explanation) return null;
+  const confluenceTone =
+    explanation.confluence === "strong" ? "buy" :
+    explanation.confluence === "moderate" ? "hold" :
+    explanation.confluence === "conflicting" ? "sell" : "neutral";
+
+  return (
+    <div className="explanation-section">
+      <div className="expl-header">
+        <strong className="expl-headline">{explanation.headline}</strong>
+        <span className={`signal-chip ${confluenceTone}`}>{explanation.confluence}</span>
+      </div>
+      {explanation.reasoning?.length > 0 && (
+        <ul className="expl-reasons">
+          {explanation.reasoning.map((reason, i) => (
+            <li key={i}>{reason}</li>
+          ))}
+        </ul>
+      )}
+      {explanation.technicals?.length > 0 && (
+        <div className="expl-technicals">
+          {explanation.technicals.map((tech, i) => (
+            <span key={i} className="tech-chip">{tech}</span>
+          ))}
+        </div>
+      )}
+      {explanation.watch_items?.length > 0 && (
+        <div className="expl-watch">
+          <span className="expl-watch-label">Watch:</span>
+          {explanation.watch_items.map((item, i) => (
+            <span key={i} className="watch-chip">{item}</span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function fetchJson(path, options) {
   return fetch(`${API_BASE}${path}`, options).then(async (response) => {
     if (!response.ok) {
@@ -298,6 +355,10 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [tickerInput, ticker]);
 
+  // Uncertainty bands for prediction cards
+  const bands = advisory?.uncertainty_bands;
+  const confFactors = advisory?.confidence_factors;
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -401,9 +462,9 @@ export default function App() {
           tone={providerTone}
         />
         <MiniKpi
-          label="News Engine"
-          value={news?.source || "Waiting"}
-          detail={`${news?.stats?.count ?? 0} active stories`}
+          label="Sentiment Engine"
+          value={news?.sentiment_method === "finbert" ? "FinBERT" : news?.source || "Waiting"}
+          detail={`${news?.stats?.count ?? 0} stories analyzed`}
           tone={newsTone}
         />
         <MiniKpi
@@ -421,6 +482,7 @@ export default function App() {
       </section>
 
       <main className="terminal-grid">
+        {/* ---- PRICE CHART PANEL ---- */}
         <section className="panel chart-panel">
           <div className="panel-header">
             <div>
@@ -442,7 +504,8 @@ export default function App() {
           </div>
         </section>
 
-        <section className="panel compact-panel">
+        {/* ---- PREDICTION + EXPLAINABILITY PANEL ---- */}
+        <section className="panel prediction-panel">
           <div className="panel-header">
             <div>
               <p className="eyebrow muted">Prediction</p>
@@ -455,18 +518,53 @@ export default function App() {
               <div className="empty-state dense">Loading forecast...</div>
             ) : (
             <>
+              {/* Prediction cards with uncertainty bands */}
               <div className="prediction-grid">
-                {(advisory?.predictions || []).map((item) => (
+                {(advisory?.predictions || []).map((item, idx) => (
                   <div key={item.day} className="prediction-card">
                     <span>Day +{item.day}</span>
                     <strong>{currency(item.price, currencyCode)}</strong>
-                    <small>{pct(item.pct_change)}</small>
+                    <small className={item.pct_change >= 0 ? "buy-text" : "sell-text"}>
+                      {pct(item.pct_change)}
+                    </small>
+                    {bands && (
+                      <span className="band-range">
+                        {currency(bands.lower?.[idx], currencyCode)} — {currency(bands.upper?.[idx], currencyCode)}
+                      </span>
+                    )}
                   </div>
                 ))}
               </div>
+
+              {/* Confidence Breakdown */}
+              <div className="confidence-section">
+                <div className="conf-header-row">
+                  <span className="conf-label">Confidence</span>
+                  <strong className={`conf-value tone-${signalTone}`}>{pct(advisory?.confidence)}</strong>
+                </div>
+                {confFactors && (
+                  <div className="conf-factors">
+                    {Object.entries(confFactors).map(([key, val]) => (
+                      <ConfidenceBar
+                        key={key}
+                        name={key.replace(/_/g, " ")}
+                        score={val.score}
+                        weight={val.weight}
+                      />
+                    ))}
+                  </div>
+                )}
+                {advisory?.confidence_formula && (
+                  <div className="conf-formula">{advisory.confidence_formula}</div>
+                )}
+              </div>
+
+              {/* Signal Explainability */}
+              <SignalExplanation explanation={advisory?.explanation} />
+
               <div className="micro-row">
-                <Stat label="Confidence" value={pct(advisory?.confidence)} tone={signalTone} />
                 <Stat label="Focus Days" value={(advisory?.focus_days_ago || []).join(", ") || "--"} />
+                <Stat label="Threshold" value={pct(advisory?.threshold_pct)} />
               </div>
             </>
             )
@@ -480,11 +578,12 @@ export default function App() {
           )}
         </section>
 
+        {/* ---- NEWS PANEL with FinBERT sentiment ---- */}
         <aside className="panel compact-panel news-panel">
           <div className="panel-header">
             <div>
               <p className="eyebrow muted">News Pulse</p>
-              <h3>{news?.source || "News"}</h3>
+              <h3>{news?.sentiment_method === "finbert" ? "FinBERT" : news?.source || "News"}</h3>
             </div>
             <span className={`signal-chip ${newsTone}`}>{news?.average_label || "neutral"}</span>
           </div>
@@ -493,6 +592,11 @@ export default function App() {
             <Stat label="Bullish" value={news?.stats?.bullish ?? 0} tone="buy" />
             <Stat label="Bearish" value={news?.stats?.bearish ?? 0} tone="sell" />
           </div>
+          {news?.sentiment_method && (
+            <div className="sentiment-method-badge">
+              <span className="method-dot" /> Powered by {news.sentiment_method === "finbert" ? "FinBERT NLP" : news.sentiment_method}
+            </div>
+          )}
           <div className="news-feed">
             {activeStories.length > 0 ? (
               activeStories.map((story, index) => (
@@ -500,6 +604,11 @@ export default function App() {
                   <div className="news-topline">
                     <span className={`news-dot ${story.sentiment_label || "neutral"}`} />
                     <span>{story.source || "Source"}</span>
+                    {story.sentiment_score != null && (
+                      <span className={`sentiment-score ${story.sentiment_label || "neutral"}`}>
+                        {story.sentiment_score > 0 ? "+" : ""}{number(story.sentiment_score, 2)}
+                      </span>
+                    )}
                   </div>
                   <strong>{story.title}</strong>
                   <p>{story.summary || "Open article for the latest coverage."}</p>
@@ -511,18 +620,28 @@ export default function App() {
           </div>
         </aside>
 
+        {/* ---- BACKTEST PANEL with new ML metrics ---- */}
         <section className="panel">
           <div className="panel-header">
             <div>
               <p className="eyebrow muted">Backtest Snapshot</p>
               <h3>Risk and return</h3>
             </div>
+            {backtest?.threshold_type && (
+              <span className="panel-badge">{backtest.threshold_type} threshold</span>
+            )}
           </div>
           {modelStatus?.ready ? (
             analyticsLoading ? (
               <div className="empty-state dense">Loading backtest...</div>
             ) : (
             <>
+              {/* Sample warning banner */}
+              {backtest?.metrics?.sample_warning && (
+                <div className="sample-warning">{backtest.metrics.sample_warning}</div>
+              )}
+
+              {/* Core financial metrics */}
               <div className="mini-terminal">
                 <Stat label="Return" value={pct(backtest?.metrics?.total_return_pct)} tone="buy" />
                 <Stat label="Sharpe" value={number(backtest?.metrics?.sharpe, 3)} />
@@ -530,7 +649,43 @@ export default function App() {
                 <Stat label="Win Rate" value={pct(backtest?.metrics?.win_rate_pct)} />
                 <Stat label="Trades" value={backtest?.metrics?.total_trades ?? "--"} />
                 <Stat label="Final Capital" value={currency(backtest?.metrics?.final_capital, currencyCode)} />
+                <Stat label="Profit Factor" value={number(backtest?.metrics?.profit_factor, 2)} />
+                <Stat label="Sortino" value={number(backtest?.metrics?.sortino, 3)} />
               </div>
+
+              {/* Prediction quality metrics */}
+              <div className="ml-metrics-section">
+                <p className="eyebrow muted metrics-section-label">Prediction Quality</p>
+                <div className="ml-metrics-grid">
+                  <Stat
+                    label="Dir. Accuracy"
+                    value={pct(backtest?.metrics?.directional_accuracy_pct)}
+                    tone={backtest?.metrics?.directional_accuracy_pct > 55 ? "buy" : "neutral"}
+                  />
+                  <Stat
+                    label="Info Coefficient"
+                    value={number(backtest?.metrics?.information_coefficient, 4)}
+                    tone={backtest?.metrics?.information_coefficient > 0.05 ? "buy" : "neutral"}
+                  />
+                  <Stat
+                    label="Predictions"
+                    value={backtest?.metrics?.n_predictions ?? "--"}
+                  />
+                  <Stat
+                    label="Statistical Sig."
+                    value={backtest?.metrics?.stat_significant ? "Yes" : "No"}
+                    tone={backtest?.metrics?.stat_significant ? "buy" : "sell"}
+                  />
+                </div>
+              </div>
+
+              {/* Statistical conclusion */}
+              {backtest?.stat_conclusion && (
+                <div className={`stat-conclusion ${backtest?.metrics?.stat_significant ? "sig-yes" : "sig-no"}`}>
+                  {backtest.stat_conclusion}
+                </div>
+              )}
+
               <div className="trade-list">
                 {(backtest?.recent_trades || []).slice(0, 6).map((trade, index) => (
                   <div key={`${trade.entry_date}-${trade.exit_date}-${index}`} className="trade-row">
@@ -549,6 +704,7 @@ export default function App() {
           )}
         </section>
 
+        {/* ---- WATCHLIST ---- */}
         <aside className="panel compact-panel">
           <div className="panel-header">
             <div>
@@ -567,12 +723,16 @@ export default function App() {
                 }}
               >
                 <span>{item.ticker}</span>
-                <strong>{number(item.score, 3)}</strong>
+                <div className="watch-meta">
+                  <strong>{number(item.score, 3)}</strong>
+                  {item.has_lstm_model && <span className="lstm-dot" title="LSTM model trained" />}
+                </div>
               </button>
             ))}
           </div>
         </aside>
 
+        {/* ---- SCREENER PANEL with model coverage ---- */}
         <section className="panel screener-panel">
           <div className="panel-header">
             <div>
@@ -582,47 +742,62 @@ export default function App() {
             <span className="panel-badge">{screenerLoading ? "scanning..." : `${screener?.count || 0} tracked`}</span>
           </div>
           {(screener?.results || []).length ? (
-            <div className="table-wrap">
-              <table className="compact-table">
-                <thead>
-                  <tr>
-                    <th>Symbol</th>
-                    <th>Score</th>
-                    <th>Fund</th>
-                    <th>Tech</th>
-                    <th>Mom</th>
-                    <th>ROE</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(screener?.results || []).map((item) => (
-                    <tr key={item.ticker}>
-                      <td>
-                        <button
-                          className="inline-link"
-                          onClick={() => {
-                            setTickerInput(item.ticker);
-                            setTicker(item.ticker);
-                          }}
-                        >
-                          {item.ticker}
-                        </button>
-                      </td>
-                      <td>{number(item.score, 3)}</td>
-                      <td>{number(item.fundamental, 2)}</td>
-                      <td>{number(item.technical, 2)}</td>
-                      <td>{number(item.momentum, 2)}</td>
-                      <td>{pct(item.roe_pct)}</td>
+            <>
+              <div className="table-wrap">
+                <table className="compact-table">
+                  <thead>
+                    <tr>
+                      <th>Symbol</th>
+                      <th>Score</th>
+                      <th>Fund</th>
+                      <th>Tech</th>
+                      <th>Mom</th>
+                      <th>ROE</th>
+                      <th>LSTM</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {(screener?.results || []).map((item) => (
+                      <tr key={item.ticker}>
+                        <td>
+                          <button
+                            className="inline-link"
+                            onClick={() => {
+                              setTickerInput(item.ticker);
+                              setTicker(item.ticker);
+                            }}
+                          >
+                            {item.ticker}
+                          </button>
+                        </td>
+                        <td>{number(item.score, 3)}</td>
+                        <td>{number(item.fundamental, 2)}</td>
+                        <td>{number(item.technical, 2)}</td>
+                        <td>{number(item.momentum, 2)}</td>
+                        <td>{pct(item.roe_pct)}</td>
+                        <td>
+                          <span className={`lstm-indicator ${item.has_lstm_model ? "active" : ""}`}>
+                            {item.has_lstm_model ? "trained" : "--"}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {/* Model coverage disclosure */}
+              {screener?.model_coverage && (
+                <div className="model-coverage-note">
+                  {screener.model_coverage.disclosure}
+                </div>
+              )}
+            </>
           ) : (
             <div className="empty-state dense">{screenerLoading ? "Scanning the market universe..." : "No screener results yet."}</div>
           )}
         </section>
 
+        {/* ---- AI BRIEF ---- */}
         <section className="panel ai-panel">
           <div className="panel-header">
             <div>
@@ -642,7 +817,7 @@ export default function App() {
       </main>
 
       <footer className="footer-bar">
-        <span>Data: {quote?.source || "Yahoo Finance fallback"} / {news?.source || "Yahoo Finance fallback"}</span>
+        <span>Data: {quote?.source || "Yahoo Finance fallback"} / {news?.sentiment_method === "finbert" ? "FinBERT NLP" : news?.source || "Yahoo Finance fallback"}</span>
         <span>
           API {health?.api || "offline"} {health?.frontend_ready ? "| dashboard ready" : "| build missing"}{" "}
           {health?.groww_configured ? "| Groww armed" : "| Groww key missing"}{" "}

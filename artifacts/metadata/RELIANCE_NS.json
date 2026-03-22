@@ -3,7 +3,7 @@
   "period": "5y",
   "epochs_requested": 20,
   "epochs_completed": 20,
-  "best_val_loss": 0.004952578494946162,
+  "best_val_loss": 0.00522296146179239,
   "train_samples": 800,
   "val_samples": 171,
   "test_samples": 172,

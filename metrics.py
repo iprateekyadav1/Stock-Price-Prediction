@@ -2,15 +2,17 @@
 metrics.py - Real-world quantitative trading metrics.
 
 All metrics used by professional algo traders and hedge funds.
-Zero external dependencies beyond numpy/pandas.
+Zero external dependencies beyond numpy/pandas/scipy.
 
-Portfolio Metrics : Sharpe, Sortino, Calmar, Max Drawdown, CAGR, Alpha, Beta
-Trade Metrics     : Win Rate, Profit Factor, Expectancy, Avg Win/Loss Ratio
-Risk Metrics      : Value at Risk (VaR), Conditional VaR, Daily Volatility
+Portfolio Metrics    : Sharpe, Sortino, Calmar, Max Drawdown, CAGR, Alpha, Beta
+Trade Metrics        : Win Rate, Profit Factor, Expectancy, Avg Win/Loss Ratio
+Risk Metrics         : Value at Risk (VaR), Conditional VaR, Daily Volatility
+Prediction Metrics   : Directional Accuracy, Information Coefficient, Statistical Significance
 """
 
 import numpy as np
 import pandas as pd
+from scipy import stats as sp_stats
 
 from config import Config
 
@@ -229,6 +231,215 @@ def daily_volatility(returns: np.ndarray, trading_days: int = 252) -> float:
 
 
 # ===========================================================================
+#  PREDICTION QUALITY METRICS (the metrics that actually matter for ML)
+# ===========================================================================
+
+def directional_accuracy(predictions: list[dict]) -> float:
+    """
+    Did the model correctly predict UP or DOWN?
+
+    This is THE most important metric for a stock prediction model.
+    RMSE/MSE can be gamed by predicting yesterday's price.
+    Directional accuracy cannot.
+
+    Each prediction dict must have:
+      - current_price: float
+      - actual_future: float
+      - pred_future: float
+
+    Returns fraction correct (0.0 to 1.0).
+    A random model scores ~50%.  >55% is meaningful.  >60% is excellent.
+    """
+    if not predictions:
+        return 0.0
+    correct = 0
+    total = 0
+    for p in predictions:
+        actual_dir = 1 if p["actual_future"] > p["current_price"] else -1
+        pred_dir = 1 if p["pred_future"] > p["current_price"] else -1
+        if actual_dir == pred_dir:
+            correct += 1
+        total += 1
+    return correct / total if total > 0 else 0.0
+
+
+def signal_accuracy(predictions: list[dict]) -> dict:
+    """
+    How often does each signal (BUY/SELL/HOLD) match the actual outcome?
+
+    Returns {
+        "overall": float,
+        "buy_accuracy": float,
+        "sell_accuracy": float,
+        "hold_accuracy": float,
+        "confusion": { "TP": int, "FP": int, "TN": int, "FN": int },
+        "precision_buy": float,
+        "recall_buy": float,
+        "f1_buy": float,
+    }
+    """
+    if not predictions:
+        return {"overall": 0.0}
+
+    correct = 0
+    tp = fp = tn = fn = 0
+    buy_correct = buy_total = 0
+    sell_correct = sell_total = 0
+    hold_correct = hold_total = 0
+
+    for p in predictions:
+        pred_sig = p.get("pred_signal", "HOLD")
+        actual_sig = p.get("actual_signal", "HOLD")
+
+        if pred_sig == actual_sig:
+            correct += 1
+
+        # BUY as positive class
+        if pred_sig == "BUY" and actual_sig == "BUY":
+            tp += 1
+        elif pred_sig == "BUY" and actual_sig != "BUY":
+            fp += 1
+        elif pred_sig != "BUY" and actual_sig == "BUY":
+            fn += 1
+        else:
+            tn += 1
+
+        if pred_sig == "BUY":
+            buy_total += 1
+            if actual_sig == "BUY":
+                buy_correct += 1
+        elif pred_sig == "SELL":
+            sell_total += 1
+            if actual_sig == "SELL":
+                sell_correct += 1
+        else:
+            hold_total += 1
+            if actual_sig == "HOLD":
+                hold_correct += 1
+
+    precision_buy = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    recall_buy = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1_buy = 2 * precision_buy * recall_buy / (precision_buy + recall_buy) if (precision_buy + recall_buy) > 0 else 0.0
+
+    return {
+        "overall": correct / len(predictions),
+        "buy_accuracy": buy_correct / buy_total if buy_total > 0 else 0.0,
+        "sell_accuracy": sell_correct / sell_total if sell_total > 0 else 0.0,
+        "hold_accuracy": hold_correct / hold_total if hold_total > 0 else 0.0,
+        "buy_count": buy_total,
+        "sell_count": sell_total,
+        "hold_count": hold_total,
+        "confusion": {"TP": tp, "FP": fp, "TN": tn, "FN": fn},
+        "precision_buy": precision_buy,
+        "recall_buy": recall_buy,
+        "f1_buy": f1_buy,
+    }
+
+
+def information_coefficient(predictions: list[dict]) -> float:
+    """
+    IC = Spearman rank correlation between predicted returns and actual returns.
+
+    Used by quant funds as the core alpha metric.
+    IC > 0.05 is meaningful.  IC > 0.10 is strong.
+    """
+    if len(predictions) < 5:
+        return 0.0
+
+    pred_returns = []
+    actual_returns = []
+    for p in predictions:
+        current = p["current_price"]
+        if current == 0:
+            continue
+        pred_returns.append((p["pred_future"] - current) / current)
+        actual_returns.append((p["actual_future"] - current) / current)
+
+    if len(pred_returns) < 5:
+        return 0.0
+
+    corr, _ = sp_stats.spearmanr(pred_returns, actual_returns)
+    return float(corr) if not np.isnan(corr) else 0.0
+
+
+def statistical_significance(trades: list[dict], null_win_rate: float = 0.5) -> dict:
+    """
+    Is the win rate statistically significant or just luck?
+
+    Uses binomial test: H0 = win rate is 50% (random).
+    p < 0.05 means the result is unlikely due to chance alone.
+
+    Also computes minimum trades needed for significance at current win rate.
+    """
+    n = len(trades)
+    if n == 0:
+        return {
+            "n_trades": 0,
+            "p_value": 1.0,
+            "significant": False,
+            "min_trades_needed": 30,
+            "conclusion": "No trades to evaluate.",
+        }
+
+    wins = sum(1 for t in trades if t["pnl"] > 0)
+    wr = wins / n
+
+    # Binomial test
+    result = sp_stats.binomtest(wins, n, null_win_rate, alternative="greater")
+    p_value = float(result.pvalue)
+
+    # Estimate min trades needed for significance at current win rate
+    # Using normal approximation: n >= (z_alpha * sqrt(p0*q0) / (p - p0))^2
+    if wr > null_win_rate:
+        z = 1.645  # 95% one-tailed
+        p0 = null_win_rate
+        q0 = 1 - p0
+        delta = wr - p0
+        min_n = int(np.ceil((z * np.sqrt(p0 * q0) / delta) ** 2))
+    else:
+        min_n = 999  # can't achieve significance with wr <= 50%
+
+    if p_value < 0.01:
+        conclusion = f"STRONG evidence (p={p_value:.4f}). Win rate {wr:.1%} is very unlikely due to chance."
+    elif p_value < 0.05:
+        conclusion = f"Significant (p={p_value:.4f}). Win rate {wr:.1%} is unlikely due to chance."
+    elif p_value < 0.10:
+        conclusion = f"Weak evidence (p={p_value:.4f}). Win rate {wr:.1%} is suggestive but not conclusive."
+    else:
+        conclusion = f"NOT significant (p={p_value:.4f}). {n} trades too few or win rate {wr:.1%} too close to random."
+
+    return {
+        "n_trades": n,
+        "wins": wins,
+        "win_rate": wr,
+        "p_value": p_value,
+        "significant": p_value < 0.05,
+        "min_trades_needed": min_n,
+        "conclusion": conclusion,
+    }
+
+
+def sample_size_warning(n_trades: int) -> str | None:
+    """Return a warning if sample size is too small for reliable metrics."""
+    if n_trades < 10:
+        return (
+            f"CRITICAL: Only {n_trades} trades. All metrics are statistically "
+            f"meaningless. Need minimum 30 trades for any reliability."
+        )
+    elif n_trades < 30:
+        return (
+            f"WARNING: Only {n_trades} trades. Results have high uncertainty. "
+            f"Need 30+ trades for basic statistical significance."
+        )
+    elif n_trades < 50:
+        return (
+            f"NOTE: {n_trades} trades provides moderate reliability. "
+            f"50+ trades recommended for robust conclusions."
+        )
+    return None
+
+
+# ===========================================================================
 #  FULL REPORT
 # ===========================================================================
 
@@ -239,9 +450,16 @@ def full_report(
     benchmark_returns: np.ndarray | None = None,
     initial_capital: float | None = None,
     currency: str = "Rs.",
+    predictions: list[dict] | None = None,
 ) -> dict:
     """
     Print a comprehensive performance report and return all metrics as a dict.
+
+    If predictions list is provided, also computes:
+    - Directional accuracy
+    - Signal accuracy (per-signal breakdown)
+    - Information coefficient
+    - Statistical significance
     """
     cap = initial_capital or Config.INITIAL_CAPITAL
 
@@ -281,10 +499,31 @@ def full_report(
     m["best_trade"] = max((t["pnl"] for t in trades), default=0)
     m["worst_trade"] = min((t["pnl"] for t in trades), default=0)
 
+    # ── Prediction-level metrics (NEW) ─────────────────────────────────
+    if predictions:
+        m["directional_accuracy"] = directional_accuracy(predictions)
+        m["signal_metrics"] = signal_accuracy(predictions)
+        m["information_coefficient"] = information_coefficient(predictions)
+        m["stat_significance"] = statistical_significance(trades)
+        m["n_predictions"] = len(predictions)
+    else:
+        m["directional_accuracy"] = None
+        m["signal_metrics"] = None
+        m["information_coefficient"] = None
+        m["stat_significance"] = None
+        m["n_predictions"] = 0
+
+    # Sample size warning
+    m["sample_warning"] = sample_size_warning(len(trades))
+
     # --- Print report ---
     print(f"\n{'='*60}")
     print(f"  PERFORMANCE REPORT")
     print(f"{'='*60}")
+
+    # Sample size warning first (most important)
+    if m["sample_warning"]:
+        print(f"\n  !! {m['sample_warning']}")
 
     print(f"\n  --- PORTFOLIO METRICS ---")
     print(f"  Total Return      : {m['total_return']*100:+.2f}%")
@@ -308,6 +547,18 @@ def full_report(
     print(f"  Avg Loss          : {currency} {m['avg_loss']:,.0f}")
     print(f"  Best Trade        : {currency} {m['best_trade']:+,.0f}")
     print(f"  Worst Trade       : {currency} {m['worst_trade']:+,.0f}")
+
+    # ── Prediction quality metrics (NEW) ───────────────────────────────
+    if predictions:
+        sig = m["signal_metrics"]
+        stat = m["stat_significance"]
+        print(f"\n  --- PREDICTION QUALITY (ML Rigor) ---")
+        print(f"  Directional Acc.  : {m['directional_accuracy']*100:.1f}%  (>55% = meaningful, >60% = excellent)")
+        print(f"  Info Coefficient  : {m['information_coefficient']:.4f}  (>0.05 = alpha signal)")
+        print(f"  Signal Accuracy   : {sig['overall']*100:.1f}%  (BUY: {sig.get('buy_count',0)}, SELL: {sig.get('sell_count',0)}, HOLD: {sig.get('hold_count',0)})")
+        print(f"  BUY Precision     : {sig['precision_buy']*100:.1f}%  | Recall: {sig['recall_buy']*100:.1f}%  | F1: {sig['f1_buy']*100:.1f}%")
+        print(f"  Statistical Test  : {stat['conclusion']}")
+        print(f"  Total Predictions : {m['n_predictions']}")
 
     print(f"\n  --- RISK METRICS ---")
     print(f"  VaR (95%)         : {m['var_95']*100:.2f}% daily")
@@ -334,6 +585,17 @@ def full_report(
         print(f"  Expectancy +  :  Strategy has a statistical edge")
     else:
         print(f"  Expectancy -  :  Strategy does NOT have an edge")
+
+    if m.get("directional_accuracy") is not None:
+        da = m["directional_accuracy"]
+        if da > 0.60:
+            print(f"  DirAcc > 60%  :  Excellent directional prediction")
+        elif da > 0.55:
+            print(f"  DirAcc > 55%  :  Meaningful directional edge")
+        elif da > 0.50:
+            print(f"  DirAcc > 50%  :  Marginal edge (barely better than coin flip)")
+        else:
+            print(f"  DirAcc < 50%  :  WORSE than random -- model may be inverted")
 
     print(f"{'='*60}\n")
 

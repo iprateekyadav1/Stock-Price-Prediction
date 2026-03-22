@@ -47,10 +47,20 @@ class Config:
     LR_FACTOR: float = 0.5
 
     # ── Backtest / Signals ────────────────────────────────────────────────
-    SIGNAL_THRESHOLD: float = 0.01           # 1% move = signal (best from testing)
+    SIGNAL_THRESHOLD: float = 0.005          # 0.5% default (adaptive overrides this)
     INITIAL_CAPITAL: float = 100_000.0       # Rs. 1 lakh starting capital
     RISK_FREE_RATE: float = 0.06 / 252       # India RBI rate ~6% annualised
     BENCHMARK_TICKER: str = "^NSEI"          # Nifty 50 index for alpha/beta
+    BACKTEST_TEST_RATIO: float = 0.30        # 30% of data for out-of-sample testing
+
+    # ── Confidence Engine ────────────────────────────────────────────────
+    MC_DROPOUT_SAMPLES: int = 30             # Monte Carlo Dropout forward passes
+    CONFIDENCE_WEIGHTS: dict = {
+        "prediction_consistency": 0.30,      # MC Dropout spread
+        "technical_alignment": 0.25,         # RSI/MACD/SMA agreement
+        "volatility_regime": 0.20,           # Recent vs historical vol
+        "model_certainty": 0.25,             # Attention entropy + magnitude
+    }
 
     # ── Screener ──────────────────────────────────────────────────────────
     FUND_WEIGHT: float = 0.40                # fundamental score weight

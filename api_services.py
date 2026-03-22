@@ -22,9 +22,11 @@ import torch
 import yfinance as yf
 
 from advisor import _classify
-from backtest import _fetch_benchmark_returns, _price_to_signal, _simulate_trades
+from backtest import _fetch_benchmark_returns, _price_to_signal, _simulate_trades, _simulate_fixed_horizon_trades, _adaptive_threshold
+from confidence import compute_confidence
 from config import Config
 from data_fetcher import add_technical_indicators, fetch_data, fetch_fundamentals
+from explainability import explain_signal
 from market_data import (
     ALPHA_VANTAGE_API_KEY,
     GROWW_API_KEY,
@@ -40,16 +42,22 @@ from metrics import (
     compute_alpha_beta,
     conditional_var,
     daily_volatility,
+    directional_accuracy,
     expectancy,
+    information_coefficient,
     max_drawdown,
     profit_factor,
+    sample_size_warning,
     sharpe_ratio,
+    signal_accuracy,
     sortino_ratio,
+    statistical_significance,
     value_at_risk,
     win_rate,
 )
 from model import LSTMStockPredictor
 from screener import fundamental_score, is_multibagger_candidate, momentum_score, technical_score
+from sentiment import classify_headlines, aggregate_sentiment
 from train import train
 
 
@@ -344,15 +352,37 @@ def get_news(ticker: str, limit: int = 8) -> dict:
     def factory():
         payload = get_stock_news(ticker, limit=limit)
         stories = payload.get("stories", [])
-        bullish = sum(1 for story in stories if story.get("sentiment_label") == "bullish")
-        bearish = sum(1 for story in stories if story.get("sentiment_label") == "bearish")
-        neutral = len(stories) - bullish - bearish
 
+        # NEW: Run FinBERT sentiment analysis on headlines
+        headlines = [s.get("title", "") or "" for s in stories]
+        sentiments = classify_headlines(headlines) if headlines else []
+
+        # Update stories with FinBERT sentiment
+        for i, story in enumerate(stories):
+            if i < len(sentiments):
+                sent = sentiments[i]
+                story["sentiment_score"] = sent["score"]
+                story["sentiment_label"] = sent["label"]
+                story["sentiment_method"] = sent.get("method", "unknown")
+                story["sentiment_positive"] = round(sent.get("positive", 0), 3)
+                story["sentiment_negative"] = round(sent.get("negative", 0), 3)
+                story["sentiment_neutral"] = round(sent.get("neutral", 0), 3)
+
+        # Aggregate
+        agg = aggregate_sentiment(sentiments) if sentiments else {}
+        bullish = agg.get("bullish_count", 0)
+        bearish = agg.get("bearish_count", 0)
+        neutral_count = agg.get("neutral_count", len(stories))
+
+        payload["stories"] = stories
+        payload["average_sentiment"] = agg.get("average_score")
+        payload["average_label"] = agg.get("average_label", "neutral")
+        payload["sentiment_method"] = agg.get("method", "none")
         payload["stats"] = {
             "count": len(stories),
             "bullish": bullish,
             "bearish": bearish,
-            "neutral": neutral,
+            "neutral": neutral_count,
         }
         return payload
 
@@ -402,7 +432,7 @@ def get_advisory(ticker: str, period: str | None = None) -> dict:
         close_scaler = scalers["close"]
 
         scaled = feature_scaler.transform(df[cfg.FEATURE_COLS])
-        x = torch.FloatTensor(scaled[-cfg.SEQ_LENGTH :]).unsqueeze(0).to(_device())
+        x = torch.FloatTensor(scaled[-cfg.SEQ_LENGTH:]).unsqueeze(0).to(_device())
 
         with torch.no_grad():
             preds_scaled, attn_weights = model(x)
@@ -413,11 +443,57 @@ def get_advisory(ticker: str, period: str | None = None) -> dict:
         pred_day5 = float(preds[-1])
         signal = _classify(current_price, pred_day5, cfg.SIGNAL_THRESHOLD)
         pct_change = ((pred_day5 - current_price) / current_price) * 100
-        confidence = min(float(np.sort(attention)[-5:].sum() * 100), 99.0)
         top_steps = np.argsort(attention)[-5:][::-1]
         focus_days = [cfg.SEQ_LENGTH - int(t) for t in top_steps]
 
-        return {
+        # NEW: Multi-factor confidence with uncertainty bands
+        latest_row = df.iloc[-1].to_dict()
+        try:
+            conf = compute_confidence(
+                model=model,
+                x=x,
+                close_scaler=close_scaler,
+                signal=signal,
+                latest_row=latest_row,
+                df_close=df["Close"].values,
+                attention_weights=attention,
+                pred_pct_change=pct_change,
+                cfg=cfg,
+            )
+            confidence = conf["confidence_pct"]
+            uncertainty = conf["uncertainty_bands"]
+            confidence_factors = {
+                k: {"score": round(v["score"], 3), "weight": v["weight"]}
+                for k, v in conf["factors"].items()
+            }
+            confidence_formula = conf["formula"]
+        except Exception:
+            confidence = min(float(np.sort(attention)[-5:].sum() * 100), 99.0)
+            uncertainty = None
+            confidence_factors = None
+            confidence_formula = None
+
+        # NEW: Signal explainability
+        try:
+            expl = explain_signal(
+                signal=signal,
+                current_price=current_price,
+                pred_price=pred_day5,
+                pred_pct=pct_change,
+                latest_row=latest_row,
+                currency="Rs." if ".NS" in ticker else "$",
+            )
+            explanation = {
+                "headline": expl["headline"],
+                "confluence": expl["confluence"],
+                "reasoning": expl["reasoning"][:3],
+                "technicals": expl["technicals"][:4],
+                "watch_items": expl["watch_items"][:3],
+            }
+        except Exception:
+            explanation = None
+
+        result = {
             "ticker": ticker,
             "as_of": _to_date(df.index[-1].date()),
             "current_price": current_price,
@@ -432,9 +508,22 @@ def get_advisory(ticker: str, period: str | None = None) -> dict:
             "signal": signal,
             "direction_pct": float(pct_change),
             "confidence": confidence,
+            "confidence_factors": confidence_factors,
+            "confidence_formula": confidence_formula,
             "focus_days_ago": focus_days,
             "threshold_pct": cfg.SIGNAL_THRESHOLD * 100,
+            "explanation": explanation,
         }
+
+        # Add uncertainty bands if available
+        if uncertainty:
+            result["uncertainty_bands"] = {
+                "lower": [round(v, 2) for v in uncertainty["lower"]],
+                "upper": [round(v, 2) for v in uncertainty["upper"]],
+                "mean": [round(v, 2) for v in uncertainty["mean"]],
+            }
+
+        return result
 
     return _cached(300, _cache_key("advisory", ticker, active_period), factory)
 
@@ -479,10 +568,18 @@ def _metrics_payload(
 def get_backtest(ticker: str, period: str | None = None, threshold: float | None = None) -> dict:
     cfg = Config()
     active_period = period or cfg.DATA_PERIOD
-    active_threshold = threshold if threshold is not None else cfg.SIGNAL_THRESHOLD
+    test_ratio = getattr(cfg, "BACKTEST_TEST_RATIO", 0.30)
 
     def factory():
         df = fetch_data(ticker, active_period, use_cache=True)
+
+        # Adaptive threshold if not manually specified
+        if threshold is not None:
+            active_threshold = threshold
+            threshold_type = "manual"
+        else:
+            active_threshold = _adaptive_threshold(df["Close"].values)
+            threshold_type = "adaptive"
 
         scalers = _load_scalers(ticker)
         model = _load_model(ticker)
@@ -491,7 +588,7 @@ def get_backtest(ticker: str, period: str | None = None, threshold: float | None
         scaled = feature_scaler.transform(df[cfg.FEATURE_COLS])
 
         n_total = len(scaled) - cfg.SEQ_LENGTH - cfg.PRED_LENGTH
-        test_start = int((cfg.TRAIN_RATIO + cfg.VAL_RATIO) * n_total)
+        test_start = int((1.0 - test_ratio) * n_total)
 
         predictions = []
         for i in range(test_start, n_total):
@@ -517,7 +614,7 @@ def get_backtest(ticker: str, period: str | None = None, threshold: float | None
                 }
             )
 
-        trades, equity_curve = _simulate_trades(predictions, cfg.INITIAL_CAPITAL)
+        trades, equity_curve = _simulate_fixed_horizon_trades(predictions, cfg.INITIAL_CAPITAL, hold_days=cfg.PRED_LENGTH)
         eq = equity_curve[equity_curve > 0]
         daily_returns = np.diff(eq) / eq[:-1] if len(eq) > 1 else np.array([0.0])
         bench_returns = _fetch_benchmark_returns(
@@ -527,16 +624,17 @@ def get_backtest(ticker: str, period: str | None = None, threshold: float | None
 
         trade_rows = []
         for trade in trades[-15:]:
-            trade_rows.append(
-                {
-                    "entry_date": _to_date(pd.Timestamp(trade["entry_date"]).date()),
-                    "exit_date": _to_date(pd.Timestamp(trade["exit_date"]).date()),
-                    "entry_price": float(trade["entry_price"]),
-                    "exit_price": float(trade["exit_price"]),
-                    "pnl": float(trade["pnl"]),
-                    "pnl_pct": float(trade["pnl_pct"] * 100),
-                }
-            )
+            row = {
+                "entry_date": _to_date(pd.Timestamp(trade["entry_date"]).date()),
+                "exit_date": _to_date(pd.Timestamp(trade["exit_date"]).date()),
+                "entry_price": float(trade["entry_price"]),
+                "exit_price": float(trade["exit_price"]),
+                "pnl": float(trade["pnl"]),
+                "pnl_pct": float(trade["pnl_pct"] * 100),
+            }
+            if "direction" in trade:
+                row["direction"] = trade["direction"]
+            trade_rows.append(row)
 
         equity_points = []
         pred_dates = [p["date"] for p in predictions]
@@ -547,19 +645,45 @@ def get_backtest(ticker: str, period: str | None = None, threshold: float | None
                 date = pred_dates[min(idx - 1, len(pred_dates) - 1)]
             equity_points.append({"date": _to_date(pd.Timestamp(date).date()), "equity": float(value)})
 
+        # Standard metrics
+        metrics = _metrics_payload(trades, eq, daily_returns, bench_returns, cfg.INITIAL_CAPITAL)
+
+        # NEW: Prediction quality metrics
+        dir_acc = directional_accuracy(predictions)
+        sig_acc = signal_accuracy(predictions)
+        ic = information_coefficient(predictions)
+        stat_sig = statistical_significance(trades)
+        sw = sample_size_warning(len(trades))
+
+        metrics["directional_accuracy_pct"] = _json_scalar(dir_acc * 100)
+        metrics["information_coefficient"] = _json_scalar(ic)
+        metrics["signal_accuracy_pct"] = _json_scalar(sig_acc["overall"] * 100)
+        metrics["buy_precision_pct"] = _json_scalar(sig_acc["precision_buy"] * 100)
+        metrics["buy_recall_pct"] = _json_scalar(sig_acc["recall_buy"] * 100)
+        metrics["buy_f1_pct"] = _json_scalar(sig_acc["f1_buy"] * 100)
+        metrics["n_predictions"] = len(predictions)
+        metrics["stat_significant"] = stat_sig["significant"]
+        metrics["p_value"] = _json_scalar(stat_sig["p_value"])
+        metrics["sample_warning"] = sw
+
         return {
             "ticker": ticker,
             "period": active_period,
             "threshold_pct": active_threshold * 100,
-            "metrics": _metrics_payload(trades, eq, daily_returns, bench_returns, cfg.INITIAL_CAPITAL),
+            "threshold_type": threshold_type,
+            "test_ratio_pct": test_ratio * 100,
+            "metrics": metrics,
             "recent_trades": trade_rows,
             "equity_curve": equity_points,
+            "stat_conclusion": stat_sig["conclusion"],
         }
 
-    return _cached(900, _cache_key("backtest", ticker, active_period, active_threshold), factory)
+    # Use adaptive threshold marker in cache key
+    threshold_key = threshold if threshold is not None else "adaptive"
+    return _cached(900, _cache_key("backtest", ticker, active_period, threshold_key), factory)
 
 
-def _screen_one_ticker(ticker: str, cfg: Config) -> dict:
+def _screen_one_ticker(ticker: str, cfg: Config, trained_set: set | None = None) -> dict:
     info = fetch_fundamentals(ticker)
     raw = yf.download(ticker, period="1y", progress=False)
     if raw.empty:
@@ -578,6 +702,9 @@ def _screen_one_ticker(ticker: str, cfg: Config) -> dict:
         + cfg.MOM_WEIGHT * m_score
     )
 
+    # NEW: Model coverage disclosure
+    has_model = ticker in (trained_set or set())
+
     return {
         "ticker": ticker,
         "name": info.get("name", ticker),
@@ -590,6 +717,7 @@ def _screen_one_ticker(ticker: str, cfg: Config) -> dict:
         "debt_to_equity": _to_float(info.get("debt_to_equity")) or 0.0,
         "earnings_growth_pct": (_to_float(info.get("earnings_growth")) or 0.0) * 100,
         "multibagger": is_multibagger_candidate(info, cfg),
+        "has_lstm_model": has_model,
     }
 
 
@@ -598,13 +726,14 @@ def get_screener(top_n: int = 10, tickers: list[str] | None = None) -> dict:
     active_tickers = tickers or cfg.NIFTY_STOCKS
 
     def factory():
+        trained_set = set(_trained_tickers())
         results = []
         errors = []
         max_workers = min(8, max(1, len(active_tickers)))
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_map = {
-                executor.submit(_screen_one_ticker, ticker, cfg): ticker
+                executor.submit(_screen_one_ticker, ticker, cfg, trained_set): ticker
                 for ticker in active_tickers
             }
             for future in concurrent.futures.as_completed(future_map):
@@ -617,11 +746,25 @@ def get_screener(top_n: int = 10, tickers: list[str] | None = None) -> dict:
         results.sort(key=lambda item: item["score"], reverse=True)
         ranked = [{"rank": idx, **row} for idx, row in enumerate(results[:top_n], start=1)]
 
+        # Model coverage disclosure
+        with_model = sum(1 for r in results if r.get("has_lstm_model"))
+        without_model = len(results) - with_model
+
         return {
             "count": len(results),
             "top_n": top_n,
             "results": ranked,
             "errors": errors,
+            "model_coverage": {
+                "with_model": with_model,
+                "without_model": without_model,
+                "total": len(results),
+                "disclosure": (
+                    f"{with_model}/{len(results)} stocks have trained LSTM models. "
+                    f"Scores for the other {without_model} are based on fundamental/technical analysis only "
+                    f"(no LSTM prediction backing)."
+                ),
+            },
         }
 
     ticker_key = ",".join(active_tickers)
