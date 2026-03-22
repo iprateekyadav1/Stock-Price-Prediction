@@ -48,6 +48,16 @@ def cmd_train(args, cfg):
     train(cfg, ticker=ticker, period=args.period, epochs=args.epochs)
 
 
+def cmd_pretrain(args, cfg):
+    """Train a starter library of high-value tickers."""
+    from train import train
+    _banner()
+    tickers = args.tickers if args.tickers else cfg.STARTER_MODEL_TICKERS
+    for ticker in tickers:
+        print(f"\n[PRETRAIN] Starting {ticker}")
+        train(cfg, ticker=ticker, period=args.period, epochs=args.epochs)
+
+
 def cmd_advise(args, cfg):
     """Get today's signal with advisory (asks permission before action)."""
     from advisor import advise
@@ -66,6 +76,7 @@ Examples:
   python bot.py scan --tickers TCS.NS INFY.NS Scan specific stocks
   python bot.py analyze RELIANCE.NS           Backtest with financial metrics
   python bot.py train RELIANCE.NS             Train model on Reliance
+  python bot.py pretrain                      Train the starter model pack
   python bot.py train RELIANCE.NS --epochs 50 Train with custom epochs
   python bot.py advise RELIANCE.NS            Get today's advisory
         """,
@@ -91,6 +102,13 @@ Examples:
     p_train.add_argument("--period", type=str, default=Config.DATA_PERIOD)
     p_train.add_argument("--epochs", type=int, default=None)
     p_train.set_defaults(func=cmd_train)
+
+    # pretrain
+    p_pretrain = sub.add_parser("pretrain", help="Train the starter model pack")
+    p_pretrain.add_argument("--tickers", nargs="+", default=None)
+    p_pretrain.add_argument("--period", type=str, default=Config.DATA_PERIOD)
+    p_pretrain.add_argument("--epochs", type=int, default=20)
+    p_pretrain.set_defaults(func=cmd_pretrain)
 
     # advise
     p_advise = sub.add_parser("advise", help="Get today's advisory signal")

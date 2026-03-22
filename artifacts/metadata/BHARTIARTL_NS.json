@@ -1,0 +1,12 @@
+{
+  "ticker": "BHARTIARTL.NS",
+  "period": "1y",
+  "epochs_requested": 30,
+  "epochs_completed": 30,
+  "best_val_loss": 0.011873878538608551,
+  "train_samples": 108,
+  "val_samples": 23,
+  "test_samples": 24,
+  "model_path": "C:\\Users\\hp\\.openclaw\\workspace\\portfolio-projects\\project-2-lstm-stock-prediction\\artifacts\\models\\BHARTIARTL_NS.pth",
+  "scaler_path": "C:\\Users\\hp\\.openclaw\\workspace\\portfolio-projects\\project-2-lstm-stock-prediction\\artifacts\\scalers\\BHARTIARTL_NS.pkl"
+}

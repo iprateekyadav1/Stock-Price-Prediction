@@ -1,0 +1,12 @@
+{
+  "ticker": "AMZN",
+  "period": "5y",
+  "epochs_requested": 20,
+  "epochs_completed": 20,
+  "best_val_loss": 0.003951460084257026,
+  "train_samples": 813,
+  "val_samples": 174,
+  "test_samples": 175,
+  "model_path": "C:\\Users\\hp\\.openclaw\\workspace\\portfolio-projects\\project-2-lstm-stock-prediction\\artifacts\\models\\AMZN.pth",
+  "scaler_path": "C:\\Users\\hp\\.openclaw\\workspace\\portfolio-projects\\project-2-lstm-stock-prediction\\artifacts\\scalers\\AMZN.pkl"
+}

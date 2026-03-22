@@ -1,0 +1,12 @@
+{
+  "ticker": "HDFCBANK.NS",
+  "period": "5y",
+  "epochs_requested": 20,
+  "epochs_completed": 20,
+  "best_val_loss": 0.006560530746355653,
+  "train_samples": 800,
+  "val_samples": 171,
+  "test_samples": 172,
+  "model_path": "C:\\Users\\hp\\.openclaw\\workspace\\portfolio-projects\\project-2-lstm-stock-prediction\\artifacts\\models\\HDFCBANK_NS.pth",
+  "scaler_path": "C:\\Users\\hp\\.openclaw\\workspace\\portfolio-projects\\project-2-lstm-stock-prediction\\artifacts\\scalers\\HDFCBANK_NS.pkl"
+}

@@ -7,11 +7,12 @@ Usage:
     python train.py --ticker TCS.NS --epochs 50
     python train.py --ticker INFY.NS --period 3y
 
-The trained model + scalers are saved so that backtest.py and
-advisor.py can load them without re-training.
+Each ticker gets its own model + scaler artifacts so inference quality
+matches the stock the user is actually viewing.
 """
 
 import argparse
+import json
 import os
 import pickle
 import time
@@ -28,7 +29,6 @@ from data_fetcher import fetch_data
 from model import LSTMStockPredictor
 
 
-# -- Dataset ------------------------------------------------------------------
 class StockDataset(Dataset):
     def __init__(self, data: np.ndarray, seq_length: int, pred_length: int):
         self.data = data
@@ -40,40 +40,41 @@ class StockDataset(Dataset):
 
     def __getitem__(self, idx):
         x = self.data[idx : idx + self.seq]
-        # target = Close price (index 3) for next pred_length days
         y = self.data[idx + self.seq : idx + self.seq + self.pred, 3]
         return torch.FloatTensor(x), torch.FloatTensor(y)
 
 
-# -- Training loop ------------------------------------------------------------
 def train(cfg: Config, ticker: str, period: str, epochs: int | None = None):
     np.random.seed(cfg.SEED)
     torch.manual_seed(cfg.SEED)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"\n{'='*60}")
-    print(f" LSTM STOCK PREDICTOR — TRAINING")
+    print(" LSTM STOCK PREDICTOR - TRAINING")
     print(f" Ticker : {ticker}")
     print(f" Device : {device}")
     print(f"{'='*60}\n")
 
-    # -- 1. Fetch data ----------------------------------------------------
     df = fetch_data(ticker, period)
 
-    # -- 2. Scale ---------------------------------------------------------
     feature_scaler = MinMaxScaler()
     scaled = feature_scaler.fit_transform(df[cfg.FEATURE_COLS])
 
     close_scaler = MinMaxScaler()
     close_scaler.fit(df[["Close"]])
 
-    # Save scalers for inference / backtest
-    os.makedirs(os.path.dirname(cfg.SCALER_PATH) or ".", exist_ok=True)
-    with open(cfg.SCALER_PATH, "wb") as f:
-        pickle.dump({"feature": feature_scaler, "close": close_scaler}, f)
-    print(f"[TRAIN] Scalers saved to {cfg.SCALER_PATH}")
+    scaler_path = cfg.get_scaler_path(ticker)
+    model_path = cfg.get_model_path(ticker)
+    metadata_path = cfg.get_metadata_path(ticker)
 
-    # -- 3. Datasets ------------------------------------------------------
+    os.makedirs(os.path.dirname(scaler_path) or ".", exist_ok=True)
+    os.makedirs(os.path.dirname(model_path) or ".", exist_ok=True)
+    os.makedirs(os.path.dirname(metadata_path) or ".", exist_ok=True)
+
+    with open(scaler_path, "wb") as f:
+        pickle.dump({"feature": feature_scaler, "close": close_scaler}, f)
+    print(f"[TRAIN] Scalers saved to {scaler_path}")
+
     dataset = StockDataset(scaled, cfg.SEQ_LENGTH, cfg.PRED_LENGTH)
     n = len(dataset)
     train_n = int(cfg.TRAIN_RATIO * n)
@@ -81,15 +82,15 @@ def train(cfg: Config, ticker: str, period: str, epochs: int | None = None):
     test_n = n - train_n - val_n
 
     train_ds, val_ds, test_ds = torch.utils.data.random_split(
-        dataset, [train_n, val_n, test_n],
+        dataset,
+        [train_n, val_n, test_n],
         generator=torch.Generator().manual_seed(cfg.SEED),
     )
     train_loader = DataLoader(train_ds, batch_size=cfg.BATCH_SIZE, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=cfg.BATCH_SIZE, shuffle=False)
 
-    print(f"[TRAIN] Samples — train: {train_n}  val: {val_n}  test: {test_n}")
+    print(f"[TRAIN] Samples - train: {train_n}  val: {val_n}  test: {test_n}")
 
-    # -- 4. Model ---------------------------------------------------------
     model = LSTMStockPredictor(
         input_dim=cfg.INPUT_DIM,
         hidden_dim=cfg.HIDDEN_DIM,
@@ -107,17 +108,15 @@ def train(cfg: Config, ticker: str, period: str, epochs: int | None = None):
         optimizer, mode="min", patience=cfg.LR_PATIENCE, factor=cfg.LR_FACTOR
     )
 
-    # -- 5. Training ------------------------------------------------------
     num_epochs = epochs or cfg.NUM_EPOCHS
     best_val = float("inf")
     patience_ctr = 0
     history = {"train_loss": [], "val_loss": []}
 
-    print(f"\n[TRAIN] Starting training — {num_epochs} epochs, patience={cfg.PATIENCE}\n")
+    print(f"\n[TRAIN] Starting training - {num_epochs} epochs, patience={cfg.PATIENCE}\n")
     t_start = time.time()
 
     for epoch in range(1, num_epochs + 1):
-        # --- train ---
         model.train()
         epoch_loss = 0.0
         for xb, yb in train_loader:
@@ -131,7 +130,6 @@ def train(cfg: Config, ticker: str, period: str, epochs: int | None = None):
             epoch_loss += loss.item()
         train_loss = epoch_loss / len(train_loader)
 
-        # --- validate ---
         model.eval()
         val_loss = 0.0
         with torch.no_grad():
@@ -152,10 +150,9 @@ def train(cfg: Config, ticker: str, period: str, epochs: int | None = None):
                 f"Train: {train_loss:.6f} | Val: {val_loss:.6f} | LR: {lr_now:.2e}"
             )
 
-        # --- early stopping ---
         if val_loss < best_val:
             best_val = val_loss
-            torch.save(model.state_dict(), cfg.MODEL_PATH)
+            torch.save(model.state_dict(), model_path)
             patience_ctr = 0
         else:
             patience_ctr += 1
@@ -164,13 +161,30 @@ def train(cfg: Config, ticker: str, period: str, epochs: int | None = None):
                 break
 
     elapsed = time.time() - t_start
-    print(f"\n[TRAIN] Done in {elapsed:.1f}s — best val loss: {best_val:.6f}")
-    print(f"[TRAIN] Model saved to {cfg.MODEL_PATH}")
+    with open(metadata_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "ticker": ticker,
+                "period": period,
+                "epochs_requested": num_epochs,
+                "epochs_completed": len(history["train_loss"]),
+                "best_val_loss": best_val,
+                "train_samples": train_n,
+                "val_samples": val_n,
+                "test_samples": test_n,
+                "model_path": model_path,
+                "scaler_path": scaler_path,
+            },
+            f,
+            indent=2,
+        )
+    print(f"\n[TRAIN] Done in {elapsed:.1f}s - best val loss: {best_val:.6f}")
+    print(f"[TRAIN] Model saved to {model_path}")
+    print(f"[TRAIN] Metadata saved to {metadata_path}")
 
     return history
 
 
-# -- CLI -----------------------------------------------------------------------
 def _parse():
     p = argparse.ArgumentParser(description="Train LSTM Stock Predictor")
     p.add_argument("--ticker", type=str, default=Config.DEFAULT_TICKER)

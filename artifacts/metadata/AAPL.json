@@ -1,0 +1,12 @@
+{
+  "ticker": "AAPL",
+  "period": "5y",
+  "epochs_requested": 20,
+  "epochs_completed": 20,
+  "best_val_loss": 0.0434228852391243,
+  "train_samples": 108,
+  "val_samples": 23,
+  "test_samples": 24,
+  "model_path": "C:\\Users\\hp\\.openclaw\\workspace\\portfolio-projects\\project-2-lstm-stock-prediction\\artifacts\\models\\AAPL.pth",
+  "scaler_path": "C:\\Users\\hp\\.openclaw\\workspace\\portfolio-projects\\project-2-lstm-stock-prediction\\artifacts\\scalers\\AAPL.pkl"
+}

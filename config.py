@@ -6,6 +6,7 @@ environment-variable overrides touch one file.
 """
 
 import os
+import re
 
 
 class Config:
@@ -72,9 +73,51 @@ class Config:
         "JSWSTEEL.NS", "ADANIENT.NS", "TECHM.NS", "BAJAJ-AUTO.NS", "INDUSINDBK.NS",
     ]
 
+    STARTER_MODEL_TICKERS = [
+        "AAPL", "MSFT", "NVDA", "TSLA", "AMZN",
+        "RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS",
+    ]
+
     # ── Paths ─────────────────────────────────────────────────────────────
     BASE_DIR: str = os.path.dirname(os.path.abspath(__file__))
     MODEL_PATH: str = os.path.join(BASE_DIR, "best_lstm_model.pth")
     SCALER_PATH: str = os.path.join(BASE_DIR, "scalers.pkl")
     CACHE_DIR: str = os.path.join(BASE_DIR, "cache")
     RESULTS_DIR: str = os.path.join(BASE_DIR, "results")
+    MODELS_DIR: str = os.path.join(BASE_DIR, "artifacts", "models")
+    SCALERS_DIR: str = os.path.join(BASE_DIR, "artifacts", "scalers")
+    METADATA_DIR: str = os.path.join(BASE_DIR, "artifacts", "metadata")
+
+    @staticmethod
+    def safe_ticker(ticker: str) -> str:
+        return re.sub(r"[^A-Za-z0-9]+", "_", ticker).strip("_").upper()
+
+    @classmethod
+    def get_model_path(cls, ticker: str) -> str:
+        return os.path.join(cls.MODELS_DIR, f"{cls.safe_ticker(ticker)}.pth")
+
+    @classmethod
+    def get_scaler_path(cls, ticker: str) -> str:
+        return os.path.join(cls.SCALERS_DIR, f"{cls.safe_ticker(ticker)}.pkl")
+
+    @classmethod
+    def get_metadata_path(cls, ticker: str) -> str:
+        return os.path.join(cls.METADATA_DIR, f"{cls.safe_ticker(ticker)}.json")
+
+    @classmethod
+    def resolve_model_path(cls, ticker: str) -> str:
+        ticker_path = cls.get_model_path(ticker)
+        if os.path.exists(ticker_path):
+            return ticker_path
+        if ticker == cls.DEFAULT_TICKER and os.path.exists(cls.MODEL_PATH):
+            return cls.MODEL_PATH
+        return ticker_path
+
+    @classmethod
+    def resolve_scaler_path(cls, ticker: str) -> str:
+        ticker_path = cls.get_scaler_path(ticker)
+        if os.path.exists(ticker_path):
+            return ticker_path
+        if ticker == cls.DEFAULT_TICKER and os.path.exists(cls.SCALER_PATH):
+            return cls.SCALER_PATH
+        return ticker_path

@@ -1,0 +1,4 @@
+2026/03/22-17:33:40.914 6674 Creating DB C:\Users\hp\.openclaw\workspace\portfolio-projects\project-2-lstm-stock-prediction\tmp-edge-profile-6\Default\EdgeCoupons/coupons_data.db since it was missing.
+2026/03/22-17:33:40.997 6674 Reusing MANIFEST C:\Users\hp\.openclaw\workspace\portfolio-projects\project-2-lstm-stock-prediction\tmp-edge-profile-6\Default\EdgeCoupons/coupons_data.db/MANIFEST-000001
+2026/03/22-17:33:57.479 9960 Level-0 table #5: started
+2026/03/22-17:33:57.493 9960 Level-0 table #5: 681620 bytes OK

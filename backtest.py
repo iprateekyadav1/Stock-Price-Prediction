@@ -123,6 +123,8 @@ def _fetch_benchmark_returns(ticker: str, df_index: pd.DatetimeIndex) -> np.ndar
 def backtest(cfg: Config, ticker: str, period: str, threshold: float | None = None):
     threshold = threshold or cfg.SIGNAL_THRESHOLD
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model_path = cfg.resolve_model_path(ticker)
+    scaler_path = cfg.resolve_scaler_path(ticker)
 
     currency = "Rs." if ".NS" in ticker or ".BO" in ticker else "$"
 
@@ -136,9 +138,9 @@ def backtest(cfg: Config, ticker: str, period: str, threshold: float | None = No
     df = fetch_data(ticker, period, use_cache=True)
 
     # 2. Load scalers
-    if not os.path.exists(cfg.SCALER_PATH):
-        raise FileNotFoundError(f"Scalers not found. Run train.py first.")
-    with open(cfg.SCALER_PATH, "rb") as f:
+    if not os.path.exists(scaler_path):
+        raise FileNotFoundError(f"Scalers not found for {ticker}. Run train.py --ticker {ticker} first.")
+    with open(scaler_path, "rb") as f:
         scalers = pickle.load(f)
     feature_scaler = scalers["feature"]
     close_scaler = scalers["close"]
@@ -152,7 +154,9 @@ def backtest(cfg: Config, ticker: str, period: str, threshold: float | None = No
         output_dim=cfg.OUTPUT_DIM,
         dropout=cfg.DROPOUT,
     ).to(device)
-    model.load_state_dict(torch.load(cfg.MODEL_PATH, map_location=device))
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Model not found for {ticker}. Run train.py --ticker {ticker} first.")
+    model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
     print("[BACKTEST] Model loaded.\n")
 

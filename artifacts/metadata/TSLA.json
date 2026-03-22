@@ -1,0 +1,12 @@
+{
+  "ticker": "TSLA",
+  "period": "5y",
+  "epochs_requested": 20,
+  "epochs_completed": 20,
+  "best_val_loss": 0.007719267702971895,
+  "train_samples": 813,
+  "val_samples": 174,
+  "test_samples": 175,
+  "model_path": "C:\\Users\\hp\\.openclaw\\workspace\\portfolio-projects\\project-2-lstm-stock-prediction\\artifacts\\models\\TSLA.pth",
+  "scaler_path": "C:\\Users\\hp\\.openclaw\\workspace\\portfolio-projects\\project-2-lstm-stock-prediction\\artifacts\\scalers\\TSLA.pkl"
+}

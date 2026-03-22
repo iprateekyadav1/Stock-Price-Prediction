@@ -4,3 +4,7 @@ pandas
 scikit-learn
 matplotlib
 yfinance>=1.0.0          # real market data from Yahoo Finance
+fastapi>=0.115.0
+uvicorn>=0.32.0
+python-dotenv>=1.0.1
+requests>=2.32.0

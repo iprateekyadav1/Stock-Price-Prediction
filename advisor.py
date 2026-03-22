@@ -39,13 +39,15 @@ def _classify(current: float, predicted: float, threshold: float) -> str:
 
 def advise(cfg: Config, ticker: str):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model_path = cfg.resolve_model_path(ticker)
+    scaler_path = cfg.resolve_scaler_path(ticker)
 
     # ── 1. Load model + scalers ──────────────────────────────────────────
-    if not os.path.exists(cfg.MODEL_PATH):
-        print("[ERROR] Model not found. Run  python train.py  first.")
+    if not os.path.exists(model_path):
+        print(f"[ERROR] Model not found for {ticker}. Run python train.py --ticker {ticker} first.")
         return
-    if not os.path.exists(cfg.SCALER_PATH):
-        print("[ERROR] Scalers not found. Run  python train.py  first.")
+    if not os.path.exists(scaler_path):
+        print(f"[ERROR] Scalers not found for {ticker}. Run python train.py --ticker {ticker} first.")
         return
 
     model = LSTMStockPredictor(
@@ -55,10 +57,10 @@ def advise(cfg: Config, ticker: str):
         output_dim=cfg.OUTPUT_DIM,
         dropout=cfg.DROPOUT,
     ).to(device)
-    model.load_state_dict(torch.load(cfg.MODEL_PATH, map_location=device))
+    model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
 
-    with open(cfg.SCALER_PATH, "rb") as f:
+    with open(scaler_path, "rb") as f:
         scalers = pickle.load(f)
     feature_scaler = scalers["feature"]
     close_scaler = scalers["close"]
