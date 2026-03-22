@@ -1,0 +1,6 @@
+torch>=2.0.0
+numpy
+pandas
+scikit-learn
+matplotlib
+yfinance>=1.0.0          # real market data from Yahoo Finance
