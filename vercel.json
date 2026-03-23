@@ -9,14 +9,14 @@
     "PYTHONUNBUFFERED": "1"
   },
   "functions": {
-    "asgi.py": {
+    "api/app.py": {
       "runtime": "python3.11"
     }
   },
   "rewrites": [
     {
       "source": "/api/(.*)",
-      "destination": "/asgi"
+      "destination": "/api/app"
     },
     {
       "source": "/(.*)",
