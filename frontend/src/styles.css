@@ -187,7 +187,11 @@ a { color: inherit; text-decoration: none; }
 }
 .logo::after {
   content: '';
-  position: absolute; inset: 0;
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
   background: linear-gradient(135deg, transparent 40%, rgba(255,255,255,0.3) 50%, transparent 60%);
   animation: shimmer 3s ease-in-out infinite;
   background-size: 200% 100%;
@@ -261,7 +265,11 @@ h1 {
 }
 .wall-clock::before {
   content: '';
-  position: absolute; inset: 0;
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
   background: var(--chrome-gradient);
   pointer-events: none;
   border-radius: inherit;
@@ -479,9 +487,16 @@ h1 {
   overflow: hidden;
 }
 .btn::before {
-  content: ''; position: absolute; inset: 0;
-  background: var(--chrome-gradient); opacity: 0;
-  transition: opacity 0.3s; pointer-events: none;
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  background: var(--chrome-gradient);
+  opacity: 0;
+  transition: opacity 0.3s;
+  pointer-events: none;
 }
 .btn:hover {
   border-color: var(--cyan);
@@ -579,7 +594,13 @@ h1 {
   position: relative;
 }
 .hero-quote::before {
-  content: ''; position: absolute; inset: 0; pointer-events: none;
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  pointer-events: none;
   background: var(--holo-gradient);
 }
 
@@ -785,7 +806,13 @@ h1 {
   transition: all 0.3s ease;
 }
 .panel::before {
-  content: ''; position: absolute; inset: 0; pointer-events: none;
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  pointer-events: none;
   background: var(--chrome-gradient);
   opacity: 0.5;
 }
@@ -833,8 +860,15 @@ h1 {
   overflow: hidden;
 }
 .stat::before {
-  content: ''; position: absolute; inset: 0;
-  background: var(--chrome-gradient); opacity: 0; transition: opacity 0.3s;
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  background: var(--chrome-gradient);
+  opacity: 0;
+  transition: opacity 0.3s;
 }
 .stat:hover {
   border-color: var(--border-glow);
@@ -890,9 +924,18 @@ h1 {
 .tv-chart-wrap { position: relative; margin: 0 -4px; z-index: 1; }
 .tv-chart-container { width: 100%; min-height: 420px; }
 .tv-chart-empty {
-  position: absolute; inset: 0;
-  display: flex; align-items: center; justify-content: center; gap: 8px;
-  color: var(--muted); font-size: 0.82rem; font-family: var(--mono);
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-family: var(--mono);
 }
 
 .chart-meta { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 12px; position: relative; z-index: 1; }
@@ -975,8 +1018,15 @@ h1 {
   position: relative; overflow: hidden;
 }
 .news-card::before {
-  content: ''; position: absolute; inset: 0;
-  background: var(--chrome-gradient); opacity: 0; transition: opacity 0.3s;
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  background: var(--chrome-gradient);
+  opacity: 0;
+  transition: opacity 0.3s;
 }
 .news-card:hover {
   transform: translateY(-5px);
