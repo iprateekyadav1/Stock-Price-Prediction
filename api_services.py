@@ -29,8 +29,11 @@ from data_fetcher import add_technical_indicators, fetch_data, fetch_fundamental
 from explainability import explain_signal
 from market_data import (
     ALPHA_VANTAGE_API_KEY,
+    FINNHUB_API_KEY,
     GROWW_API_KEY,
     TWELVE_DATA_API_KEY,
+    get_finnhub_candles,
+    get_market_status,
     get_realtime_quote,
     get_stock_news,
     search_symbols,
@@ -58,12 +61,16 @@ from metrics import (
 from model import LSTMStockPredictor
 from screener import fundamental_score, is_multibagger_candidate, momentum_score, technical_score
 from sentiment import classify_headlines, aggregate_sentiment
+from alpha_pulse import compute_pulse, PulseResult
+from exchanges import get_exchange_overview, get_market_movers, get_global_indices, list_exchanges, EXCHANGES
 from train import train
 
 
 _RUNTIME_CACHE: dict[str, tuple[float, object]] = {}
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 
 def _device() -> torch.device:
@@ -190,6 +197,7 @@ def get_app_status() -> dict:
         "device": str(_device()),
         "groww_configured": bool(GROWW_API_KEY),
         "gemini_configured": bool(GEMINI_API_KEY),
+        "openrouter_configured": bool(OPENROUTER_API_KEY),
         "twelve_data_configured": bool(TWELVE_DATA_API_KEY),
         "alpha_vantage_configured": bool(ALPHA_VANTAGE_API_KEY),
         "trained_tickers": trained,
@@ -348,7 +356,7 @@ def get_quote(ticker: str) -> dict:
     return _cached(10, _cache_key("quote", ticker), lambda: get_realtime_quote(ticker))
 
 
-def get_news(ticker: str, limit: int = 8) -> dict:
+def get_news(ticker: str, limit: int = 20) -> dict:
     def factory():
         payload = get_stock_news(ticker, limit=limit)
         stories = payload.get("stories", [])
@@ -439,10 +447,34 @@ def get_advisory(ticker: str, period: str | None = None) -> dict:
 
         preds = close_scaler.inverse_transform(preds_scaled.cpu().numpy())[0]
         attention = attn_weights.cpu().numpy()[0]
-        current_price = float(df["Close"].iloc[-1])
+        current_price = float(df["Close"].iloc[-1])   # historical close (model input context)
+
+        # ── Live price as percentage reference ────────────────────────────────
+        # The historical close can lag the live price significantly (cache,
+        # adjusted prices, or data staleness), which causes extreme % values.
+        # Use the live quote price for display percentages when available.
+        reference_price = current_price
+        try:
+            live_q = get_realtime_quote(ticker)
+            lp = float(live_q.get("price") or 0)
+            if lp > 0:
+                reference_price = lp
+        except Exception:
+            pass  # keep historical close as reference
+
+        # Stale-model detection: flag when live price differs >10 % from training close
+        price_drift = abs(reference_price - current_price) / max(reference_price, 1e-6)
+        model_stale_warning: str | None = None
+        if price_drift > 0.10:
+            model_stale_warning = (
+                f"Model trained on data up to {_to_date(df.index[-1].date())}. "
+                f"Live price ({reference_price:.2f}) differs {price_drift * 100:.1f}% "
+                f"from historical close ({current_price:.2f}). Retrain for accurate forecasts."
+            )
+
         pred_day5 = float(preds[-1])
-        signal = _classify(current_price, pred_day5, cfg.SIGNAL_THRESHOLD)
-        pct_change = ((pred_day5 - current_price) / current_price) * 100
+        signal = _classify(reference_price, pred_day5, cfg.SIGNAL_THRESHOLD)
+        pct_change = ((pred_day5 - reference_price) / reference_price) * 100
         top_steps = np.argsort(attention)[-5:][::-1]
         focus_days = [cfg.SEQ_LENGTH - int(t) for t in top_steps]
 
@@ -477,7 +509,7 @@ def get_advisory(ticker: str, period: str | None = None) -> dict:
         try:
             expl = explain_signal(
                 signal=signal,
-                current_price=current_price,
+                current_price=reference_price,   # use live price for explanation text
                 pred_price=pred_day5,
                 pred_pct=pct_change,
                 latest_row=latest_row,
@@ -496,12 +528,15 @@ def get_advisory(ticker: str, period: str | None = None) -> dict:
         result = {
             "ticker": ticker,
             "as_of": _to_date(df.index[-1].date()),
-            "current_price": current_price,
+            "current_price": current_price,       # historical close (model context)
+            "live_price": reference_price,         # live price (used for % display)
+            "model_stale_warning": model_stale_warning,
             "predictions": [
                 {
                     "day": i,
                     "price": float(price),
-                    "pct_change": float(((price - current_price) / current_price) * 100),
+                    # pct relative to live price — prevents extreme values from stale history
+                    "pct_change": float(((price - reference_price) / reference_price) * 100),
                 }
                 for i, price in enumerate(preds, start=1)
             ],
@@ -685,7 +720,7 @@ def get_backtest(ticker: str, period: str | None = None, threshold: float | None
 
 def _screen_one_ticker(ticker: str, cfg: Config, trained_set: set | None = None) -> dict:
     info = fetch_fundamentals(ticker)
-    raw = yf.download(ticker, period="1y", progress=False)
+    raw = yf.download(ticker, period="1y", progress=False, auto_adjust=True)
     if raw.empty:
         raise ValueError("no data")
     if isinstance(raw.columns, pd.MultiIndex):
@@ -723,7 +758,7 @@ def _screen_one_ticker(ticker: str, cfg: Config, trained_set: set | None = None)
 
 def get_screener(top_n: int = 10, tickers: list[str] | None = None) -> dict:
     cfg = Config()
-    active_tickers = tickers or cfg.NIFTY_STOCKS
+    active_tickers = tickers or getattr(cfg, "INDIAN_STOCKS", cfg.NIFTY_STOCKS)
 
     def factory():
         trained_set = set(_trained_tickers())
@@ -769,3 +804,371 @@ def get_screener(top_n: int = 10, tickers: list[str] | None = None) -> dict:
 
     ticker_key = ",".join(active_tickers)
     return _cached(900, _cache_key("screener", top_n, ticker_key), factory)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LLM-POWERED STOCK INTELLIGENCE (OpenRouter)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _llm_stock_assessment(
+    ticker: str,
+    pulse_data: dict,
+    news_data: dict | None = None,
+    fundamentals: dict | None = None,
+    advisory_data: dict | None = None,
+) -> dict | None:
+    """
+    Call OpenRouter LLM to produce an intelligent stock assessment.
+
+    Gathers all available signals (technical pulse, news, fundamentals,
+    LSTM forecast) and asks the LLM to synthesise a verdict.
+
+    Returns dict with keys:
+        llm_grade   : str   - STRONG BUY / BUY / HOLD / SELL / STRONG SELL
+        llm_score   : float - 0-100 conviction score
+        reasoning   : str   - concise explanation
+        catalysts   : list  - upcoming catalysts / risks
+        action      : str   - one-line actionable recommendation
+    """
+    if not OPENROUTER_API_KEY:
+        return None
+
+    try:
+        # ── Build context string ────────────────────────────────────────
+        sections = []
+
+        # 1. Technical Pulse snapshot
+        dims = pulse_data.get("dimensions", {})
+        breakdown = pulse_data.get("breakdown", {})
+        sections.append(
+            f"ALPHA PULSE ENGINE SCORE: {pulse_data.get('score', 'N/A')}/100 "
+            f"(Grade: {pulse_data.get('grade', 'N/A')})\n"
+            f"  Regime: {pulse_data.get('regime', 'N/A')}, "
+            f"Momentum: {pulse_data.get('momentum_direction', 'N/A')}, "
+            f"Confluence: {pulse_data.get('confluence', 'N/A')}\n"
+            f"  Dimensions:"
+        )
+        for dim_key, dim_val in dims.items():
+            detail = breakdown.get(dim_key, "")
+            sections.append(f"    {dim_key}: {dim_val:.3f} — {detail}")
+
+        if pulse_data.get("alerts"):
+            sections.append(f"  Alerts: {'; '.join(pulse_data['alerts'])}")
+
+        # 2. News headlines + sentiment
+        if news_data:
+            stories = news_data.get("stories", [])[:8]
+            avg_sent = news_data.get("average_sentiment")
+            avg_label = news_data.get("average_label", "neutral")
+            sections.append(
+                f"\nNEWS SENTIMENT: avg={avg_sent}, label={avg_label}, "
+                f"count={news_data.get('stats', {}).get('count', 0)}"
+            )
+            for s in stories:
+                title = s.get("title", "Untitled")
+                sent = s.get("sentiment_label", "neutral")
+                sections.append(f"  [{sent.upper()}] {title}")
+
+        # 3. Company fundamentals
+        if fundamentals:
+            sections.append(
+                f"\nFUNDAMENTALS ({fundamentals.get('name', ticker)}):\n"
+                f"  Sector: {fundamentals.get('sector', 'N/A')}, "
+                f"Industry: {fundamentals.get('industry', 'N/A')}\n"
+                f"  Market Cap: {fundamentals.get('market_cap', 0):,.0f}, "
+                f"P/E: {fundamentals.get('pe_ratio', 0):.1f}, "
+                f"Forward P/E: {fundamentals.get('forward_pe', 0):.1f}\n"
+                f"  ROE: {(fundamentals.get('roe', 0) or 0) * 100:.1f}%, "
+                f"Debt/Equity: {fundamentals.get('debt_to_equity', 0):.2f}\n"
+                f"  Earnings Growth: {(fundamentals.get('earnings_growth', 0) or 0) * 100:.1f}%, "
+                f"Revenue Growth: {(fundamentals.get('revenue_growth', 0) or 0) * 100:.1f}%\n"
+                f"  52W High: {fundamentals.get('fifty_two_week_high', 0)}, "
+                f"52W Low: {fundamentals.get('fifty_two_week_low', 0)}, "
+                f"Beta: {fundamentals.get('beta', 1.0):.2f}"
+            )
+
+        # 4. LSTM model forecast
+        if advisory_data:
+            sections.append(
+                f"\nLSTM MODEL FORECAST:\n"
+                f"  Signal: {advisory_data.get('signal', 'N/A')}, "
+                f"Confidence: {advisory_data.get('confidence', 'N/A')}%\n"
+                f"  Current Price: {advisory_data.get('current_price', 'N/A')}, "
+                f"5-day Predicted Move: {advisory_data.get('direction_pct', 0):.2f}%"
+            )
+            preds = advisory_data.get("predictions", [])
+            if preds:
+                pred_str = ", ".join(
+                    f"D{p['day']}={p['price']:.2f}({p['pct_change']:+.1f}%)"
+                    for p in preds
+                )
+                sections.append(f"  Day-by-day: {pred_str}")
+
+        context = "\n".join(sections)
+
+        # ── LLM prompt ─────────────────────────────────────────────────
+        system_prompt = (
+            "You are Alpha Pulse AI, an expert quantitative stock analyst. "
+            "You receive multi-dimensional technical, fundamental, sentiment, "
+            "and ML forecast data. Your job is to synthesise all signals into "
+            "a single coherent verdict.\n\n"
+            "RULES:\n"
+            "- Be data-driven. Cite specific numbers from the data.\n"
+            "- If signals conflict, explain the conflict and weight accordingly.\n"
+            "- Identify catalysts (upcoming events, sector trends, macro risks).\n"
+            "- Never give financial advice. This is for educational/research use.\n"
+            "- Keep reasoning concise (3-5 bullet points).\n"
+            "- Output EXACTLY this JSON format (no markdown, no code blocks):\n"
+            '{"llm_grade":"STRONG BUY|BUY|HOLD|SELL|STRONG SELL",'
+            '"llm_score":0-100,'
+            '"reasoning":"3-5 bullet points separated by |",'
+            '"catalysts":"2-3 catalysts/risks separated by |",'
+            '"action":"one-line actionable recommendation"}'
+        )
+
+        user_prompt = (
+            f"Analyze {ticker} using ALL the data below. "
+            f"Produce your verdict as the specified JSON.\n\n"
+            f"{context}"
+        )
+
+        payload = {
+            "model": "google/gemini-2.0-flash-001",
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "max_tokens": 500,
+            "temperature": 0.3,
+        }
+
+        resp = requests.post(
+            OPENROUTER_URL,
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://stock-pulse-dashboard.local",
+                "X-Title": "Stock Pulse Alpha Engine",
+            },
+            json=payload,
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        raw_text = (
+            data.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
+            .strip()
+        )
+
+        # Parse JSON from response (strip markdown fences if any)
+        clean = raw_text
+        if "```" in clean:
+            clean = clean.split("```")[1] if len(clean.split("```")) > 1 else clean
+            if clean.startswith("json"):
+                clean = clean[4:]
+            clean = clean.strip()
+
+        import json as _json
+        result = _json.loads(clean)
+
+        # Validate and normalise
+        valid_grades = {"STRONG BUY", "BUY", "HOLD", "SELL", "STRONG SELL"}
+        grade = result.get("llm_grade", "HOLD").upper()
+        if grade not in valid_grades:
+            grade = "HOLD"
+
+        score = max(0, min(100, float(result.get("llm_score", 50))))
+
+        return {
+            "llm_grade": grade,
+            "llm_score": round(score, 1),
+            "reasoning": result.get("reasoning", ""),
+            "catalysts": result.get("catalysts", ""),
+            "action": result.get("action", ""),
+            "model": data.get("model", "gemini-2.0-flash"),
+        }
+
+    except Exception as exc:
+        print(f"[LLM] Assessment failed for {ticker}: {exc}")
+        return None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ALPHA PULSE ENGINE
+# ══════════════════════════════════════════════════════════════════════════════
+
+def get_pulse(ticker: str, period: str = "1y") -> dict:
+    """Compute the Alpha Pulse Engine score for a ticker, enhanced with LLM intelligence."""
+    def factory():
+        df = _fetch_with_fallback(ticker, period, prefer_live=True)
+
+        # ── Gather intelligence from all sources ──────────────────────
+        # 1. News + FinBERT sentiment
+        try:
+            news = get_news(ticker, limit=10)
+            avg_sent = news.get("average_sentiment")
+        except Exception:
+            news = None
+            avg_sent = None
+
+        # 2. Company fundamentals (online)
+        try:
+            fundamentals = fetch_fundamentals(ticker)
+        except Exception:
+            fundamentals = None
+
+        # 3. LSTM model forecast (if trained)
+        advisory = None
+        try:
+            model_status = get_model_status(ticker)
+            if model_status.get("ready"):
+                advisory = get_advisory(ticker, period)
+        except Exception:
+            advisory = None
+
+        # ── Core 7-dimension Pulse score ──────────────────────────────
+        pulse = compute_pulse(df, sentiment_score=avg_sent)
+
+        pulse_data = {
+            "ticker": ticker,
+            "score": pulse.score,
+            "grade": pulse.grade,
+            "dimensions": pulse.dimensions,
+            "breakdown": pulse.breakdown,
+            "confluence": pulse.confluence,
+            "regime": pulse.regime,
+            "momentum_direction": pulse.momentum_direction,
+            "alerts": list(pulse.alerts),
+        }
+
+        # ── LLM-powered intelligent assessment ───────────────────────
+        llm = _llm_stock_assessment(
+            ticker=ticker,
+            pulse_data=pulse_data,
+            news_data=news,
+            fundamentals=fundamentals,
+            advisory_data=advisory,
+        )
+
+        if llm:
+            pulse_data["ai_assessment"] = llm
+
+            # ── Fuse LLM verdict with technical score ─────────────────
+            # Weighted blend: 70% technical Pulse + 30% LLM score
+            tech_score = pulse.score
+            llm_score = llm["llm_score"]
+            fused_score = round(0.70 * tech_score + 0.30 * llm_score, 1)
+
+            # Grade from fused score
+            if fused_score >= 80:
+                fused_grade = "STRONG BUY"
+            elif fused_score >= 60:
+                fused_grade = "BUY"
+            elif fused_score >= 40:
+                fused_grade = "HOLD"
+            elif fused_score >= 20:
+                fused_grade = "SELL"
+            else:
+                fused_grade = "STRONG SELL"
+
+            pulse_data["raw_technical_score"] = tech_score
+            pulse_data["raw_technical_grade"] = pulse.grade
+            pulse_data["score"] = fused_score
+            pulse_data["grade"] = fused_grade
+
+            # Add to alerts if LLM and technical disagree
+            if llm["llm_grade"] != pulse.grade:
+                pulse_data["alerts"].append(
+                    f"AI divergence: Technical={pulse.grade}, LLM={llm['llm_grade']}"
+                )
+        else:
+            pulse_data["ai_assessment"] = None
+
+        # ── Add fundamentals summary ──────────────────────────────────
+        if fundamentals:
+            pulse_data["fundamentals"] = {
+                "name": fundamentals.get("name", ticker),
+                "sector": fundamentals.get("sector", "N/A"),
+                "industry": fundamentals.get("industry", "N/A"),
+                "pe_ratio": fundamentals.get("pe_ratio", 0),
+                "roe_pct": round((fundamentals.get("roe") or 0) * 100, 1),
+                "debt_to_equity": fundamentals.get("debt_to_equity", 0),
+                "market_cap": fundamentals.get("market_cap", 0),
+                "beta": fundamentals.get("beta", 1.0),
+            }
+
+        # ── Add LSTM forecast summary ─────────────────────────────────
+        if advisory:
+            pulse_data["lstm_forecast"] = {
+                "signal": advisory.get("signal"),
+                "confidence": advisory.get("confidence"),
+                "direction_pct": advisory.get("direction_pct"),
+                "current_price": advisory.get("current_price"),
+            }
+
+        return pulse_data
+
+    return _cached(120, _cache_key("pulse", ticker, period), factory)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GLOBAL EXCHANGES + MARKET MOVERS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def get_exchange_data(exchange_code: str) -> dict:
+    """Get exchange overview including gainers/losers."""
+    return get_exchange_overview(exchange_code)
+
+
+def get_movers(exchange_code: str = "NSE") -> dict:
+    """Get top gainers and losers for an exchange."""
+    return get_market_movers(exchange_code)
+
+
+def get_indices() -> list[dict]:
+    """Get all global indices snapshot."""
+    return get_global_indices()
+
+
+def get_exchanges_list() -> list[dict]:
+    """Get list of supported exchanges."""
+    return list_exchanges()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CANDLES + MARKET STATUS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def get_candles(ticker: str, period: str = "1y") -> dict:
+    """Get OHLCV candle data for TradingView-style charts."""
+    def factory():
+        # Try Finnhub first
+        days = {"1m": 30, "3m": 90, "6m": 180, "1y": 365, "2y": 730, "5y": 1825}.get(period, 365)
+        candles = get_finnhub_candles(ticker, resolution="D", count=days)
+
+        if candles:
+            return {"ticker": ticker, "source": "finnhub", "candles": candles, "count": len(candles)}
+
+        # Fallback to yfinance
+        df = _fetch_with_fallback(ticker, period, prefer_live=True)
+        yf_candles = []
+        for idx, row in df.iterrows():
+            yf_candles.append({
+                "time": int(idx.timestamp()),
+                "open": float(row["Open"]),
+                "high": float(row["High"]),
+                "low": float(row["Low"]),
+                "close": float(row["Close"]),
+                "volume": int(row.get("Volume", 0)),
+            })
+        return {"ticker": ticker, "source": "yfinance", "candles": yf_candles, "count": len(yf_candles)}
+
+    return _cached(180, _cache_key("candles", ticker, period), factory)
+
+
+def get_mkt_status() -> dict:
+    """Get market open/close status."""
+    return get_market_status()

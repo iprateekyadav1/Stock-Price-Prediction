@@ -1,0 +1,12 @@
+{
+  "ticker": "POWERGRID.NS",
+  "period": "5y",
+  "epochs_requested": 15,
+  "epochs_completed": 15,
+  "best_val_loss": 0.0027737742445121207,
+  "train_samples": 800,
+  "val_samples": 171,
+  "test_samples": 172,
+  "model_path": "C:\\Users\\hp\\.openclaw\\workspace\\portfolio-projects\\project-2-lstm-stock-prediction\\artifacts\\models\\POWERGRID_NS.pth",
+  "scaler_path": "C:\\Users\\hp\\.openclaw\\workspace\\portfolio-projects\\project-2-lstm-stock-prediction\\artifacts\\scalers\\POWERGRID_NS.pkl"
+}

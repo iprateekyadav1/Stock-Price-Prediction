@@ -74,6 +74,7 @@ class Config:
     MIN_FCF: float = 0                       # positive free cash flow
 
     # Stock universe for scanning (liquid NSE stocks)
+    # ── Original NIFTY 30 (backward compat) ──
     NIFTY_STOCKS = [
         "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS",
         "HINDUNILVR.NS", "SBIN.NS", "BHARTIARTL.NS", "ITC.NS", "KOTAKBANK.NS",
@@ -81,6 +82,36 @@ class Config:
         "TITAN.NS", "SUNPHARMA.NS", "ULTRACEMCO.NS", "NESTLEIND.NS", "WIPRO.NS",
         "HCLTECH.NS", "TATACONSUM.NS", "NTPC.NS", "POWERGRID.NS", "TATASTEEL.NS",
         "JSWSTEEL.NS", "ADANIENT.NS", "TECHM.NS", "BAJAJ-AUTO.NS", "INDUSINDBK.NS",
+    ]
+
+    # ── Expanded Indian universe (Top 100 by market cap) ──
+    # Source: BSE/NSE Top 200 + BS 1000 Index (parsed from PDF data)
+    INDIAN_STOCKS = [
+        # ── Mega Cap (₹5L+ Cr) ──
+        "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS",
+        "HINDUNILVR.NS", "SBIN.NS", "BHARTIARTL.NS", "ITC.NS", "KOTAKBANK.NS",
+        # ── Large Cap I (₹1L-5L Cr) ──
+        "LT.NS", "AXISBANK.NS", "BAJFINANCE.NS", "ASIANPAINT.NS", "MARUTI.NS",
+        "TITAN.NS", "SUNPHARMA.NS", "ULTRACEMCO.NS", "NESTLEIND.NS", "WIPRO.NS",
+        "HCLTECH.NS", "TATACONSUM.NS", "NTPC.NS", "POWERGRID.NS", "TATASTEEL.NS",
+        "JSWSTEEL.NS", "ADANIENT.NS", "TECHM.NS", "BAJAJ-AUTO.NS", "INDUSINDBK.NS",
+        "DMART.NS", "BAJAJFINSV.NS", "TATAMOTORS.NS", "HINDZINC.NS", "DIVISLAB.NS",
+        "PIDILITIND.NS", "VEDL.NS", "SBILIFE.NS", "IOC.NS", "GRASIM.NS",
+        # ── Large Cap II (₹50K-1L Cr) ──
+        "DABUR.NS", "M&M.NS", "GODREJCP.NS", "HINDALCO.NS", "SHREECEM.NS",
+        "COALINDIA.NS", "BPCL.NS", "DLF.NS", "BRITANNIA.NS", "HAVELLS.NS",
+        "DRREDDY.NS", "AMBUJACEM.NS", "SIEMENS.NS", "CIPLA.NS", "INDIGO.NS",
+        "EICHERMOT.NS", "MARICO.NS", "APOLLOHOSP.NS", "GAIL.NS", "ADANIPORTS.NS",
+        "HDFCLIFE.NS", "ONGC.NS", "ADANIGREEN.NS", "BEL.NS", "HAL.NS",
+        "TATAPOWER.NS", "HEROMOTOCO.NS", "IRCTC.NS", "ZOMATO.NS",
+        # ── Mid Cap Elite (₹25K-50K Cr) ──
+        "POLYCAB.NS", "TRENT.NS", "BHARATFORG.NS", "ABB.NS", "VBL.NS",
+        "PFC.NS", "RECLTD.NS", "NHPC.NS", "TATAELXSI.NS", "PERSISTENT.NS",
+        "DIXON.NS", "COFORGE.NS", "JUBLFOOD.NS", "SAIL.NS", "BANKBARODA.NS",
+        "BOSCHLTD.NS", "JINDALSTEL.NS", "GODREJPROP.NS", "TORNTPHARM.NS",
+        "MUTHOOTFIN.NS", "SRF.NS", "UPL.NS", "LUPIN.NS", "BIOCON.NS",
+        "COLPAL.NS", "TVSMOTOR.NS", "CUMMINSIND.NS", "BATAINDIA.NS",
+        "PIIND.NS", "PAGEIND.NS", "MRF.NS",
     ]
 
     STARTER_MODEL_TICKERS = [

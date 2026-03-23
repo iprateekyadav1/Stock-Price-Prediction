@@ -220,7 +220,7 @@ def scan_market(
             info = fetch_fundamentals(ticker)
 
             # Fetch price data (1 year for technical analysis)
-            raw = yf.download(ticker, period="1y", progress=False)
+            raw = yf.download(ticker, period="1y", progress=False, auto_adjust=True)
             if raw.empty:
                 errors.append(ticker)
                 continue

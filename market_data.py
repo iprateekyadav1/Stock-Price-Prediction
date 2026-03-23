@@ -27,11 +27,13 @@ load_dotenv()
 
 TWELVE_DATA_BASE = "https://api.twelvedata.com"
 ALPHA_VANTAGE_BASE = "https://www.alphavantage.co/query"
+FINNHUB_BASE = "https://finnhub.io/api/v1"
 GROWW_BASE = "https://api.groww.in/v1"
 GROWW_INSTRUMENTS_URL = "https://growwapi-assets.groww.in/instruments/instrument.csv"
 GROWW_API_KEY = os.getenv("GROWW_API_KEY", "").strip()
 TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "").strip()
 ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY", "").strip()
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "").strip()
 
 LOCAL_SYMBOLS = [
     {"symbol": "AAPL", "name": "Apple Inc.", "exchange": "NASDAQ", "country": "United States", "type": "Common Stock"},
@@ -230,7 +232,7 @@ def _groww_quote(ticker: str) -> dict:
     }
 
 
-def _google_news_rss(query: str, limit: int = 8) -> list[dict]:
+def _google_news_rss(query: str, limit: int = 15) -> list[dict]:
     url = (
         "https://news.google.com/rss/search"
         f"?q={quote_plus(query)}"
@@ -254,6 +256,73 @@ def _google_news_rss(query: str, limit: int = 8) -> list[dict]:
             }
         )
     return stories
+
+
+def _economic_times_rss(query: str, limit: int = 10) -> list[dict]:
+    """Fetch stock news from Economic Times RSS feeds (Indian market focus)."""
+    feeds = [
+        "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms",
+        "https://economictimes.indiatimes.com/markets/stocks/rssfeeds/2146842.cms",
+    ]
+    stories = []
+    query_lower = query.lower().replace(".ns", "").replace(".bo", "")
+    for feed_url in feeds:
+        try:
+            resp = requests.get(feed_url, timeout=15)
+            resp.raise_for_status()
+            root = ElementTree.fromstring(resp.content)
+            for item in root.findall("./channel/item"):
+                title = item.findtext("title") or ""
+                desc = item.findtext("description") or ""
+                # Include if query term appears in title/desc, or just include all for broad coverage
+                if query_lower in title.lower() or query_lower in desc.lower() or len(stories) < limit // 2:
+                    stories.append({
+                        "title": title,
+                        "summary": desc[:300] if desc else "",
+                        "source": "Economic Times",
+                        "url": item.findtext("link"),
+                        "published_at": item.findtext("pubDate"),
+                        "sentiment_score": None,
+                        "sentiment_label": "neutral",
+                    })
+                if len(stories) >= limit:
+                    break
+        except Exception:
+            continue
+        if len(stories) >= limit:
+            break
+    return stories[:limit]
+
+
+def _moneycontrol_rss(limit: int = 8) -> list[dict]:
+    """Fetch market news from Moneycontrol RSS."""
+    feeds = [
+        "https://www.moneycontrol.com/rss/marketreports.xml",
+        "https://www.moneycontrol.com/rss/stocksinnews.xml",
+    ]
+    stories = []
+    for feed_url in feeds:
+        try:
+            resp = requests.get(feed_url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+            resp.raise_for_status()
+            root = ElementTree.fromstring(resp.content)
+            for item in root.findall("./channel/item"):
+                stories.append({
+                    "title": item.findtext("title") or "",
+                    "summary": (item.findtext("description") or "")[:300],
+                    "source": "Moneycontrol",
+                    "url": item.findtext("link"),
+                    "published_at": item.findtext("pubDate"),
+                    "sentiment_score": None,
+                    "sentiment_label": "neutral",
+                })
+                if len(stories) >= limit:
+                    break
+        except Exception:
+            continue
+        if len(stories) >= limit:
+            break
+    return stories[:limit]
 
 
 @lru_cache(maxsize=64)
@@ -373,7 +442,90 @@ def get_realtime_quote(ticker: str) -> dict:
     }
 
 
-def get_stock_news(ticker: str, limit: int = 8) -> dict:
+def _finnhub_ticker(ticker: str) -> str:
+    """Convert yfinance ticker to Finnhub format."""
+    if ticker.endswith(".NS"):
+        return ticker.replace(".NS", ".NS")  # Finnhub uses same for NSE
+    if ticker.endswith(".BO"):
+        return ticker.replace(".BO", ".BO")
+    return ticker
+
+
+def _finnhub_news(ticker: str, limit: int = 8) -> list[dict]:
+    """Fetch company news from Finnhub."""
+    from datetime import datetime, timedelta
+    today = datetime.now().strftime("%Y-%m-%d")
+    week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+
+    # For Indian stocks, search general market news with keyword
+    symbol = ticker.replace(".NS", "").replace(".BO", "")
+
+    try:
+        data = requests.get(
+            f"{FINNHUB_BASE}/company-news",
+            params={"symbol": symbol, "from": week_ago, "to": today, "token": FINNHUB_API_KEY},
+            timeout=15,
+        ).json()
+
+        if not isinstance(data, list) or not data:
+            # Try general news search
+            data = requests.get(
+                f"{FINNHUB_BASE}/news",
+                params={"category": "general", "token": FINNHUB_API_KEY},
+                timeout=15,
+            ).json()
+
+        stories = []
+        for item in (data or [])[:limit]:
+            stories.append({
+                "title": item.get("headline"),
+                "summary": item.get("summary", ""),
+                "source": item.get("source", "Finnhub"),
+                "url": item.get("url"),
+                "published_at": item.get("datetime"),
+                "image": item.get("image"),
+                "sentiment_score": None,
+                "sentiment_label": "neutral",
+            })
+        return stories
+    except Exception:
+        return []
+
+
+def get_stock_news(ticker: str, limit: int = 20) -> dict:
+    """
+    Aggregate news from 6+ sources for maximum coverage.
+    Default limit raised from 8 → 20 for a richer news feed.
+    Sources: Finnhub, Alpha Vantage, yfinance, Google News RSS,
+             Economic Times RSS, Moneycontrol RSS.
+    """
+    stories = []
+    seen_urls = set()
+    seen_titles = set()
+
+    def _dedup_add(new_stories: list[dict]):
+        """Add stories with URL + fuzzy title deduplication."""
+        for s in new_stories:
+            url = s.get("url") or ""
+            title = (s.get("title") or "").strip().lower()
+            if not title:
+                continue
+            # Skip exact URL duplicates
+            if url and url in seen_urls:
+                continue
+            # Skip near-duplicate titles (first 50 chars match)
+            title_key = title[:50]
+            if title_key in seen_titles:
+                continue
+            seen_urls.add(url)
+            seen_titles.add(title_key)
+            stories.append(s)
+
+    # ── 1. Finnhub company news ──────────────────────────────────────
+    if FINNHUB_API_KEY:
+        _dedup_add(_finnhub_news(ticker, limit=15))
+
+    # ── 2. Alpha Vantage sentiment ───────────────────────────────────
     if ALPHA_VANTAGE_API_KEY:
         try:
             data = _request_json(
@@ -381,76 +533,189 @@ def get_stock_news(ticker: str, limit: int = 8) -> dict:
                 {
                     "function": "NEWS_SENTIMENT",
                     "tickers": ticker,
-                    "limit": limit,
+                    "limit": 15,
                     "apikey": ALPHA_VANTAGE_API_KEY,
                 },
             )
             feed = data.get("feed", []) if isinstance(data, dict) else []
-            stories = []
-            scores = []
-            for item in feed[:limit]:
+            av_stories = []
+            for item in feed[:15]:
                 score = _normalize_news_sentiment(item)
-                if score is not None:
-                    scores.append(score)
-                stories.append(
-                    {
-                        "title": item.get("title"),
-                        "summary": item.get("summary"),
-                        "source": item.get("source"),
-                        "url": item.get("url"),
-                        "published_at": item.get("time_published"),
-                        "sentiment_score": score,
-                        "sentiment_label": _sentiment_label(score),
-                    }
-                )
-
-            average = sum(scores) / len(scores) if scores else None
-            return {
-                "source": "Alpha Vantage",
-                "average_sentiment": average,
-                "average_label": _sentiment_label(average),
-                "stories": stories,
-            }
+                av_stories.append({
+                    "title": item.get("title"),
+                    "summary": item.get("summary"),
+                    "source": item.get("source"),
+                    "url": item.get("url"),
+                    "published_at": item.get("time_published"),
+                    "sentiment_score": score,
+                    "sentiment_label": _sentiment_label(score),
+                })
+            _dedup_add(av_stories)
         except Exception:
             pass
 
-    ticker_obj = yf.Ticker(ticker)
-    items = getattr(ticker_obj, "news", []) or []
-    stories = []
-    for item in items[:limit]:
-        content = item.get("content", {})
-        provider = content.get("provider") or item.get("publisher")
-        stories.append(
-            {
+    # ── 3. yfinance news ─────────────────────────────────────────────
+    try:
+        ticker_obj = yf.Ticker(ticker)
+        items = getattr(ticker_obj, "news", []) or []
+        yf_stories = []
+        for item in items[:15]:
+            content = item.get("content", {})
+            provider = content.get("provider") or item.get("publisher")
+            url = _text_value(content.get("canonicalUrl", {}).get("url") or item.get("link"))
+            yf_stories.append({
                 "title": _text_value(content.get("title") or item.get("title")),
                 "summary": _text_value(content.get("summary") or item.get("summary")),
                 "source": _text_value(provider),
-                "url": _text_value(content.get("canonicalUrl", {}).get("url") or item.get("link")),
+                "url": url,
                 "published_at": content.get("pubDate") or item.get("providerPublishTime"),
                 "sentiment_score": None,
                 "sentiment_label": "neutral",
-            }
-        )
+            })
+        _dedup_add(yf_stories)
+    except Exception:
+        pass
 
-    if len(stories) < limit:
+    # ── 4. Google News RSS (multiple queries for broader coverage) ───
+    clean_symbol = ticker.replace(".NS", "").replace(".BO", "")
+    queries = [
+        f"{ticker} stock",
+        f"{clean_symbol} share price",
+        f"{clean_symbol} stock market news",
+    ]
+    for q in queries:
+        if len(stories) >= limit:
+            break
         try:
-            google_stories = _google_news_rss(f"{ticker} stock", limit=limit)
-            seen = {story.get("url") for story in stories if story.get("url")}
-            for story in google_stories:
-                url = story.get("url")
-                if url and url in seen:
-                    continue
-                stories.append(story)
-                if url:
-                    seen.add(url)
-                if len(stories) >= limit:
-                    break
+            _dedup_add(_google_news_rss(q, limit=10))
+        except Exception:
+            continue
+
+    # ── 5. Economic Times RSS (Indian market) ────────────────────────
+    if ".NS" in ticker or ".BO" in ticker:
+        try:
+            _dedup_add(_economic_times_rss(clean_symbol, limit=8))
         except Exception:
             pass
 
+    # ── 6. Moneycontrol RSS (Indian market general) ──────────────────
+    if ".NS" in ticker or ".BO" in ticker:
+        try:
+            _dedup_add(_moneycontrol_rss(limit=6))
+        except Exception:
+            pass
+
+    primary = "multi-source"
+    if FINNHUB_API_KEY:
+        primary = "Finnhub + multi-source"
+
     return {
-        "source": "Yahoo Finance + Google News fallback" if stories else "Yahoo Finance fallback",
+        "source": primary,
         "average_sentiment": None,
         "average_label": "neutral",
-        "stories": stories,
+        "stories": stories[:limit],
     }
+
+
+def get_finnhub_candles(ticker: str, resolution: str = "D", count: int = 365) -> list[dict]:
+    """Fetch OHLCV candle data from Finnhub for charting."""
+    if not FINNHUB_API_KEY:
+        return []
+    import time as _time
+    now = int(_time.time())
+    start = now - (count * 86400)
+    symbol = ticker.replace(".NS", ".NS").replace(".BO", ".BO")
+    try:
+        data = requests.get(
+            f"{FINNHUB_BASE}/stock/candle",
+            params={"symbol": symbol, "resolution": resolution, "from": start, "to": now, "token": FINNHUB_API_KEY},
+            timeout=15,
+        ).json()
+        if data.get("s") != "ok":
+            return []
+        candles = []
+        for i in range(len(data.get("t", []))):
+            candles.append({
+                "time": data["t"][i],
+                "open": data["o"][i],
+                "high": data["h"][i],
+                "low": data["l"][i],
+                "close": data["c"][i],
+                "volume": data["v"][i] if "v" in data else 0,
+            })
+        return candles
+    except Exception:
+        return []
+
+
+def _is_nse_open_now() -> dict:
+    """Smart NSE market-hours check using IST timezone.
+    NSE pre-open: 09:00-09:15, normal trading: 09:15-15:30 IST, Mon-Fri.
+    Also accounts for Indian public holidays (major ones).
+    """
+    from datetime import datetime, timezone, timedelta
+    IST = timezone(timedelta(hours=5, minutes=30))
+    now = datetime.now(IST)
+    weekday = now.weekday()          # 0=Mon … 6=Sun
+
+    # ---------- holidays (static list, covers major NSE closures) ----------
+    HOLIDAYS_2025_2026 = {
+        # 2025
+        (1, 26), (2, 26), (3, 14), (3, 31), (4, 10), (4, 14), (4, 18),
+        (5, 1), (6, 27), (8, 15), (8, 16), (8, 27), (10, 2), (10, 20),
+        (10, 21), (10, 22), (10, 23), (11, 5), (11, 26), (12, 25),
+        # 2026
+        (1, 26), (2, 17), (3, 3), (3, 19), (3, 30), (4, 3), (4, 14),
+        (5, 1), (5, 25), (6, 17), (7, 7), (8, 15), (9, 4), (10, 2),
+        (10, 9), (10, 20), (11, 9), (11, 24), (12, 25),
+    }
+    today_md = (now.month, now.day)
+
+    # Weekend
+    if weekday >= 5:
+        return {"available": True, "isOpen": False,
+                "holiday": "Weekend", "exchange": "NSE",
+                "t": now.isoformat()}
+
+    # Holiday
+    if today_md in HOLIDAYS_2025_2026:
+        return {"available": True, "isOpen": False,
+                "holiday": "Public Holiday", "exchange": "NSE",
+                "t": now.isoformat()}
+
+    # Trading hours: 09:15 – 15:30 IST
+    market_open  = now.replace(hour=9,  minute=15, second=0, microsecond=0)
+    market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
+
+    is_open = market_open <= now <= market_close
+
+    return {
+        "available": True,
+        "isOpen": is_open,
+        "exchange": "NSE",
+        "t": now.isoformat(),
+        "session": "pre-open" if (now.replace(hour=9, minute=0, second=0) <= now < market_open) else
+                   "normal" if is_open else "closed",
+    }
+
+
+def get_market_status() -> dict:
+    """Check if NSE / US markets are open.
+    Priority: smart IST-based NSE check (always works, no API needed).
+    Fallback Finnhub for US if key is available.
+    """
+    result = _is_nse_open_now()
+
+    # Also try Finnhub for US market status if key is available
+    if FINNHUB_API_KEY:
+        try:
+            us = requests.get(
+                f"{FINNHUB_BASE}/stock/market-status",
+                params={"exchange": "US", "token": FINNHUB_API_KEY},
+                timeout=5,
+            ).json()
+            result["us_isOpen"] = us.get("isOpen", False)
+        except Exception:
+            result["us_isOpen"] = None
+
+    return result

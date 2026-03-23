@@ -94,7 +94,7 @@ def load_real_data(ticker: str, period: str = "2y") -> pd.DataFrame:
         import yfinance as yf
     except ImportError:
         raise ImportError("Install yfinance:  pip install yfinance")
-    raw = yf.download(ticker, period=period, progress=False)
+    raw = yf.download(ticker, period=period, progress=False, auto_adjust=True)
     raw = raw[["Open", "High", "Low", "Close", "Volume"]]
     return _add_indicators(raw)
 

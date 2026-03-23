@@ -203,7 +203,7 @@ def _fetch_benchmark_returns(ticker: str, df_index: pd.DatetimeIndex) -> np.ndar
     try:
         start = df_index[0].strftime("%Y-%m-%d")
         end = df_index[-1].strftime("%Y-%m-%d")
-        bench = yf.download(ticker, start=start, end=end, progress=False)
+        bench = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
         if isinstance(bench.columns, pd.MultiIndex):
             bench.columns = bench.columns.droplevel(1)
         bench_close = bench["Close"].reindex(df_index, method="ffill").dropna()

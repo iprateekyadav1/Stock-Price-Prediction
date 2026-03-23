@@ -1,9 +1,9 @@
 {
   "ticker": "RELIANCE.NS",
   "period": "5y",
-  "epochs_requested": 20,
-  "epochs_completed": 20,
-  "best_val_loss": 0.00522296146179239,
+  "epochs_requested": 30,
+  "epochs_completed": 30,
+  "best_val_loss": 0.0037456119316630065,
   "train_samples": 800,
   "val_samples": 171,
   "test_samples": 172,

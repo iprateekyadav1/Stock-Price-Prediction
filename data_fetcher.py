@@ -9,11 +9,71 @@ Usage:
 
 import os
 import hashlib
+import time
+import requests as _requests
 import pandas as pd
 import numpy as np
 import yfinance as yf
 
 from config import Config
+
+# ── Finnhub key (for fundamentals fallback) ───────────────────────────────────
+_FINNHUB_KEY: str = os.getenv("FINNHUB_API_KEY", "")
+
+
+def _yf_download(ticker: str, period: str, max_attempts: int = 3) -> pd.DataFrame:
+    """
+    Wrapper around yf.download() with exponential-backoff retry.
+
+    Catches transient Yahoo Finance 401 / 429 / connection errors
+    and retries up to `max_attempts` times before re-raising.
+    """
+    last_err: Exception | None = None
+    for attempt in range(max_attempts):
+        try:
+            df = yf.download(ticker, period=period, progress=False, auto_adjust=True)
+            if not df.empty:
+                return df
+        except Exception as exc:
+            last_err = exc
+            if attempt < max_attempts - 1:
+                wait = 2 ** attempt          # 1 s, 2 s, 4 s
+                print(f"[DATA] yfinance attempt {attempt + 1} failed ({exc}). Retrying in {wait}s …")
+                time.sleep(wait)
+    raise RuntimeError(
+        f"Yahoo Finance unavailable for '{ticker}' after {max_attempts} attempts: {last_err}"
+    )
+
+
+def _finnhub_fundamentals(ticker: str) -> dict:
+    """
+    Fetch basic financial metrics from Finnhub as a fallback when
+    yfinance returns empty / 401 for fundamentals.
+    Returns an empty dict if FINNHUB_API_KEY is not configured.
+    """
+    if not _FINNHUB_KEY:
+        return {}
+    try:
+        resp = _requests.get(
+            "https://finnhub.io/api/v1/stock/metric",
+            params={"symbol": ticker, "metric": "all", "token": _FINNHUB_KEY},
+            timeout=6,
+        )
+        m = resp.json().get("metric", {})
+        return {
+            "pe_ratio":            m.get("peNormalizedAnnual", 0.0) or 0.0,
+            "roe":                 (m.get("roeTTM") or 0.0) / 100,
+            "debt_to_equity":      m.get("totalDebt/totalEquityAnnual", 0.0) or 0.0,
+            "earnings_growth":     (m.get("epsGrowth3Y") or 0.0) / 100,
+            "revenue_growth":      (m.get("revenueGrowth3Y") or 0.0) / 100,
+            "market_cap":          (m.get("marketCapitalization") or 0) * 1_000_000,
+            "fifty_two_week_high": m.get("52WeekHigh", 0.0) or 0.0,
+            "fifty_two_week_low":  m.get("52WeekLow", 0.0) or 0.0,
+            "beta":                m.get("beta", 1.0) or 1.0,
+        }
+    except Exception as exc:
+        print(f"[DATA] Finnhub fundamentals fallback failed for {ticker}: {exc}")
+        return {}
 
 
 def _cache_path(ticker: str, period: str) -> str:
@@ -94,7 +154,7 @@ def fetch_data(
         df = pd.read_csv(cache, index_col=0, parse_dates=True)
     else:
         print(f"[DATA] Downloading {ticker} ({period}) from Yahoo Finance ...")
-        raw = yf.download(ticker, period=period, progress=False)
+        raw = _yf_download(ticker, period)          # retry wrapper — handles 401 crumb errors
         if raw.empty:
             raise ValueError(f"No data returned for ticker '{ticker}'. Check the symbol.")
 
@@ -124,14 +184,18 @@ def fetch_fundamentals(ticker: str) -> dict:
     t = yf.Ticker(ticker)
     try:
         info = t.info
-    except Exception:
+        # yfinance sometimes returns a skeleton dict without useful data
+        if not info or info.get("regularMarketPrice") is None and info.get("currentPrice") is None:
+            raise ValueError("yfinance returned empty fundamentals")
+    except Exception as exc:
+        print(f"[DATA] yfinance fundamentals failed for {ticker}: {exc}. Using Finnhub fallback.")
         info = {}
 
     def _safe(key, default=None):
         v = info.get(key, default)
         return v if v is not None else default
 
-    return {
+    result = {
         "ticker": ticker,
         "name": _safe("shortName", ticker),
         "sector": _safe("sector", "N/A"),
@@ -150,6 +214,14 @@ def fetch_fundamentals(ticker: str) -> dict:
         "dividend_yield": _safe("dividendYield", 0.0),
         "beta": _safe("beta", 1.0),
     }
+
+    # Fill any zero / missing values using Finnhub as secondary source
+    finnhub = _finnhub_fundamentals(ticker)
+    for key, fval in finnhub.items():
+        if key in result and fval and (result[key] == 0.0 or result[key] is None):
+            result[key] = fval
+
+    return result
 
 
 if __name__ == "__main__":
