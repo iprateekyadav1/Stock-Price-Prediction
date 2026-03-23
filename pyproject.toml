@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=65.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lstm-stock-dashboard"
+version = "1.0.0"
+description = "LSTM-powered stock prediction dashboard with real-time data and AI analysis"
+requires-python = ">=3.9"
+
+[tool.setuptools]
+packages = []
+
+[tool.vercel]
+framework = "fastapi"
+app = "asgi:app"

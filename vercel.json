@@ -1,0 +1,26 @@
+{
+  "buildCommand": "pip install -r requirements.txt && cd frontend && npm install && npm run build",
+  "outputDirectory": "frontend/dist",
+  "framework": "fastapi",
+  "python": {
+    "version": "3.11"
+  },
+  "env": {
+    "PYTHONUNBUFFERED": "1"
+  },
+  "functions": {
+    "asgi.py": {
+      "runtime": "python3.11"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "/asgi"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/"
+    }
+  ]
+}
