@@ -5,9 +5,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="${ROOT_DIR}/.venv"
 
-TICKER="${TICKER:-RELIANCE.NS}"
+TICKER="${TICKER:TCS.NS}"
 PERIOD="${PERIOD:-5y}"
-EPOCHS="${EPOCHS:-25}"
+EPOCHS="${EPOCHS:50}"
 TOP_N="${TOP_N:-10}"
 API_HOST="${API_HOST:-127.0.0.1}"
 API_PORT="${API_PORT:-8001}"

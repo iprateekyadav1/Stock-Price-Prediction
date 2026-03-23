@@ -4,7 +4,7 @@ pandas
 scikit-learn
 scipy
 matplotlib
-yfinance>=1.0.0          # real market data from Yahoo Finance
+yfinance>=0.2.40,<1.0.0  # 0.2.x handles Yahoo Finance crumbs reliably; 1.x has auth regressions
 transformers>=4.30.0     # FinBERT financial sentiment analysis
 fastapi>=0.115.0
 uvicorn>=0.32.0
